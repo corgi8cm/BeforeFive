@@ -1,0 +1,2 @@
+# cmd 讀 UTF-8 中文時需要 CRLF 換行，否則指令會被切壞
+*.bat text eol=crlf
