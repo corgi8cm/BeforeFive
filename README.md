@@ -125,6 +125,7 @@ tests/
   golden/                   標準測試資料：輸入 bundle 與預期的 report.md（手機版也要通過）
 docs/
   data-format.md            資料包、合併規則、report.md 格式規格
+  mobile-roadmap.md         手機版（Android）規劃，目前暫停
 ```
 
 之後要加的功能：
