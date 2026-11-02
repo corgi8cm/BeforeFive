@@ -32,7 +32,7 @@
 ## 工作回顧產出
 
 ```
-文件\WorkReports\report_2026-11-02\
+ReportTool\WorkReports\report_2026-11-02\
 ├─ 01_修登入頁timeout問題.png   ← 長邊縮到 1600px
 ├─ 02_timeout修好，已送PR.png
 └─ report.md
@@ -50,7 +50,7 @@
 - `settings.json`：
   - `hotkey`：全域快捷鍵，例如 `"Ctrl+Alt+R"`、`"Ctrl+Shift+Space"`、`"Win+F9"`
   - `data_dir`：資料存放位置，空白表示 `%LOCALAPPDATA%\ReportTool\data`
-  - `output_dir`：回報資料夾位置，空白表示 `文件\WorkReports`
+  - `output_dir`：回報資料夾位置，空白表示專案底下的 `WorkReports\`（已加入 .gitignore，不會上傳）
   - `max_image_side`：圖片長邊上限，預設 1600
 
 修改 `settings.json` 後要重開程式。

@@ -1,7 +1,6 @@
 """讀取 config/settings.json 與 config/instructions.md。"""
 import json
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +10,7 @@ CONFIG_DIR = ROOT / "config"
 DEFAULT_SETTINGS = {
     "hotkey": "Ctrl+Alt+R",
     "data_dir": "",  # 空白 = %LOCALAPPDATA%\ReportTool\data
-    "output_dir": "",  # 空白 = 文件\WorkReports
+    "output_dir": "",  # 空白 = 專案底下的 WorkReports
     "max_image_side": 1600,
 }
 
@@ -36,18 +35,6 @@ class Settings:
         return self.config_dir / "instructions.md"
 
 
-def documents_dir() -> Path:
-    """Windows 的「文件」資料夾（可能被 OneDrive 重新導向）。"""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
-        if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0:  # CSIDL_PERSONAL
-            return Path(buf.value)
-    return Path.home() / "Documents"
-
-
 def default_data_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     return (Path(base) if base else Path.home() / ".local" / "share") / "ReportTool" / "data"
@@ -67,7 +54,7 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
     return Settings(
         hotkey=raw["hotkey"],
         data_dir=Path(os.path.expandvars(raw["data_dir"])) if raw["data_dir"] else default_data_dir(),
-        output_dir=Path(os.path.expandvars(raw["output_dir"])) if raw["output_dir"] else documents_dir() / "WorkReports",
+        output_dir=Path(os.path.expandvars(raw["output_dir"])) if raw["output_dir"] else ROOT / "WorkReports",
         max_image_side=int(raw["max_image_side"]),
         config_dir=config_dir,
     )
