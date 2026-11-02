@@ -1,10 +1,12 @@
 """讀取 config/settings.json 與 config/instructions.md。"""
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 打包成 exe 時，config/ 與 WorkReports/ 放在 exe 旁邊
+ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
 
 DEFAULT_SETTINGS = {

@@ -12,7 +12,16 @@
 
 程式會常駐在系統匣，關掉主視窗只是縮到系統匣；要結束請在系統匣圖示按右鍵 →「結束」。重複執行 `run.bat` 只會叫出現有視窗。
 
-**開機自動啟動**：按 `Win+R` 輸入 `shell:startup`，把 `run.bat` 的捷徑放進去。
+**開機自動啟動**：按 `Win+R` 輸入 `shell:startup`，把 `run.bat`（或 `ReportTool.exe`）的捷徑放進去。
+
+### 打包成 exe
+
+完成上面的 `setup.bat` 後，雙擊 `build.bat`，約一分鐘後產生 `dist\ReportTool.exe`（單一檔案，約 60 MB，不需要安裝 Python 就能執行）。
+
+- 把 exe 放到任何資料夾都可以；第一次執行會在 exe 旁邊建立 `config\`，`WorkReports\` 也會產生在 exe 旁邊
+- 紀錄資料一樣在 `%LOCALAPPDATA%\ReportTool\data`，和 `run.bat` 版本共用同一份
+- 單一檔案的 exe 每次啟動要先解壓，大約需要幾秒鐘；啟動後常駐系統匣，之後用快捷鍵叫出不受影響
+- exe 和 `run.bat` 版本不要同時執行（後啟動的會只叫出先啟動的那個視窗）
 
 ## 使用方式
 
@@ -88,6 +97,8 @@ ReportTool\WorkReports\report_2026-11-02\
 
 ```
 main.py                     進入點
+build.bat                   打包成 dist\ReportTool.exe
+tools/make_ico.py           產生 exe 圖示
 reporttool/
   app.py                    系統匣、全域快捷鍵、單一實例
   config.py                 讀 config/

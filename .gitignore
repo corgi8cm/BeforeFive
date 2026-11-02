@@ -7,3 +7,6 @@ venv/
 *.db
 report_*/
 WorkReports/
+dist/
+build/
+*.spec
