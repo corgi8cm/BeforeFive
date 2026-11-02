@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from ..config import Settings, load_instructions
 from ..db import STATUS_LABELS, Database
 from ..report import generate_report
+from ..slides import export_slides
 from .entry_dialog import STATUS_COLORS, EntryDialog
 
 STATUS_ICONS = {"done": "✅", "doing": "🔄", "blocked": "⛔"}
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
         self.review_btn = button("📋 工作回顧", self.review, "產生 report_日期 資料夾並開啟")
         self.review_btn.setStyleSheet("font-weight:bold; padding:4px 12px;")
         top.addWidget(self.review_btn)
+        top.addWidget(button("📊 匯出 PPT", self.export_ppt, "一則紀錄一頁，存成 report_日期/report.pptx"))
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["時間", "狀態", "Tags", "內容", "圖片"])
@@ -194,6 +196,23 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"已產生 {folder}", 8000)
         os.startfile(folder)
+
+    def export_ppt(self):
+        d = self.current_date
+        if not self.db.entries_for_date(d):
+            QMessageBox.information(self, "匯出 PPT", f"{d} 沒有任何紀錄。")
+            return
+        try:
+            path = export_slides(self.db, d, self.settings.output_dir, self.settings.ppt_template_path,
+                                 self.settings.max_image_side)
+        except PermissionError:
+            QMessageBox.warning(self, "匯出 PPT", "report.pptx 可能正在 PowerPoint 中開啟，請先關閉再匯出。")
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "匯出失敗", str(e))
+            return
+        self.statusBar().showMessage(f"已匯出 {path}", 8000)
+        os.startfile(path.parent)
 
     def open_output_dir(self):
         self.settings.output_dir.mkdir(parents=True, exist_ok=True)

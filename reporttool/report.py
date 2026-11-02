@@ -1,5 +1,6 @@
 """工作回顧：把某天的紀錄整理成 report_YYYY-MM-DD/ 資料夾。"""
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image as PILImage, ImageOps
@@ -60,28 +61,56 @@ def _clear_previous_output(folder: Path):
             f.unlink()
 
 
-def generate_report(db: Database, date: str, output_root, instructions: str, max_side: int = 1600) -> Path:
-    folder = Path(output_root) / f"report_{date}"
-    folder.mkdir(parents=True, exist_ok=True)
-    _clear_previous_output(folder)
+@dataclass
+class NumberedImage:
+    number: int  # 當天從 1 開始的附圖編號
+    src: Path  # 原圖位置
+    filename: str  # 給 AI 的檔名，例如 01_修登入頁.png
+    include: bool
 
+    @property
+    def ref(self) -> str:
+        if not self.include:
+            return f"附圖{self.number}：未提供"
+        if not self.src.exists():
+            return f"附圖{self.number}：檔案遺失"
+        return f"附圖{self.number}：{self.filename}"
+
+    @property
+    def available(self) -> bool:
+        return self.include and self.src.exists()
+
+
+def number_images(db: Database, entries: list[Entry]) -> list[tuple[Entry, list[NumberedImage]]]:
+    """依紀錄時間順序替圖片編號，report.md 與 PPT 共用同一套編號。"""
     n = 0
-    lines = []
-    for entry in db.entries_for_date(date):
-        refs = []
+    result = []
+    for entry in entries:
+        images = []
         for img in entry.images:
             n += 1
-            if not img.include:
-                refs.append(f"附圖{n}：未提供")
-                continue
             src = db.abs_path(img.path)
-            if not src.exists():
-                refs.append(f"附圖{n}：檔案遺失")
-                continue
-            name = f"{n:02d}_{slugify(entry.text)}{output_suffix(src)}"
-            resize_image(src, folder / name, max_side)
-            refs.append(f"附圖{n}：{name}")
-        lines.append(format_entry_line(entry, refs))
+            images.append(NumberedImage(n, src, f"{n:02d}_{slugify(entry.text)}{output_suffix(src)}", img.include))
+        result.append((entry, images))
+    return result
+
+
+def report_folder(output_root, date: str) -> Path:
+    folder = Path(output_root) / f"report_{date}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def generate_report(db: Database, date: str, output_root, instructions: str, max_side: int = 1600) -> Path:
+    folder = report_folder(output_root, date)
+    _clear_previous_output(folder)
+
+    lines = []
+    for entry, images in number_images(db, db.entries_for_date(date)):
+        for img in images:
+            if img.available:
+                resize_image(img.src, folder / img.filename, max_side)
+        lines.append(format_entry_line(entry, [img.ref for img in images]))
 
     (folder / "report.md").write_text(build_markdown(date, instructions, lines), encoding="utf-8")
     return folder

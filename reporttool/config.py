@@ -35,6 +35,11 @@ class Settings:
     def instructions_path(self) -> Path:
         return self.config_dir / "instructions.md"
 
+    @property
+    def ppt_template_path(self) -> Path:
+        """放了這個檔案就用它當 PPT 模板，沒有就用內建樣式。"""
+        return self.config_dir / "ppt_template.pptx"
+
 
 def default_data_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA")
