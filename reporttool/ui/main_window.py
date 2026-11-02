@@ -6,14 +6,15 @@ from datetime import date
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView, QMainWindow,
+    QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..config import Settings, load_instructions
 from ..db import STATUS_LABELS, Database
 from ..report import generate_report
 from ..slides import export_slides
+from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import ManageDialog
 
@@ -91,6 +92,13 @@ class MainWindow(QMainWindow):
         bottom.addWidget(button("編輯 AI 指示", lambda: open_path(settings.instructions_path)))
         bottom.addWidget(button("開啟設定資料夾", lambda: open_path(settings.config_dir)))
         bottom.addWidget(button("開啟回報資料夾", self.open_output_dir))
+        backup = QPushButton("備份 ▾")
+        backup_menu = QMenu(backup)
+        backup_menu.addAction("匯出備份…", self.export_backup)
+        backup_menu.addAction("從備份匯入…", self.import_backup)
+        backup.setMenu(backup_menu)
+        backup.setToolTip("把所有紀錄與圖片匯出成一個 zip，或從 zip 合併回來")
+        bottom.addWidget(backup)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -290,6 +298,46 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"已匯出 {path}", 8000)
         os.startfile(path.parent)
+
+    # ---- 備份 ----
+
+    def export_backup(self):
+        default = self.settings.output_dir / f"ReportTool備份_{date.today().isoformat()}.zip"
+        self.settings.output_dir.mkdir(parents=True, exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(self, "匯出備份", str(default), "ReportTool 備份 (*.zip)")
+        if not path:
+            return
+        try:
+            export_bundle(self.db, path)
+        except Exception as e:
+            QMessageBox.critical(self, "匯出失敗", str(e))
+            return
+        entries, images = live_counts(self.db)
+        self.statusBar().showMessage(f"已匯出 {entries} 筆紀錄、{images} 張圖片到 {path}", 8000)
+
+    def import_backup(self):
+        path, _ = QFileDialog.getOpenFileName(self, "從備份匯入", str(self.settings.output_dir),
+                                              "ReportTool 備份 (*.zip)")
+        if not path:
+            return
+        if QMessageBox.question(
+                self, "從備份匯入",
+                "會把備份合併進目前的資料：同一筆紀錄以較晚修改的版本為準，目前資料中較新的修改不會被覆蓋。\n\n要繼續嗎？") \
+                != QMessageBox.Yes:
+            return
+        try:
+            stats = import_bundle(self.db, path)
+        except BundleError as e:
+            QMessageBox.warning(self, "無法匯入", str(e))
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "匯入失敗", str(e))
+            return
+        self.reload_categories()
+        QMessageBox.information(
+            self, "匯入完成",
+            f"新增 {stats['added']} 筆、更新 {stats['updated']} 筆、刪除 {stats['deleted']} 筆紀錄，"
+            f"分類變動 {stats['categories']} 個。")
 
     def open_output_dir(self):
         self.settings.output_dir.mkdir(parents=True, exist_ok=True)

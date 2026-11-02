@@ -114,3 +114,27 @@ def test_review_copies_markdown_and_manage_dialog(qapp, tmp_path, monkeypatch):
     assert win.tree.topLevelItemCount() == 0
 
     ManageDialog(db, win)  # 能建立即可
+
+
+def test_backup_export_and_import(qapp, tmp_path, monkeypatch):
+    import reporttool.ui.main_window as mw
+    from PySide6.QtCore import QDate
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    zip_path = str(tmp_path / "backup.zip")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (zip_path, ""))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (zip_path, ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+
+    a = Database(tmp_path / "a")
+    a.save_entry(Entry(None, DATE, "09:00", "要備份的", "done", ["專案A"]))
+    settings = load_settings(tmp_path / "config")
+    settings.output_dir = tmp_path / "out"
+    mw.MainWindow(a, settings).export_backup()
+
+    b = Database(tmp_path / "b")
+    win = mw.MainWindow(b, settings)
+    win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
+    win.import_backup()
+    assert win.tree.topLevelItemCount() == 1

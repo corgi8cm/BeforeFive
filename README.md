@@ -84,10 +84,21 @@ ReportTool\WorkReports\report_2026-11-02\
 
 `data_dir` 裡有：
 
-- `reporttool.db`：SQLite，包含 `entries`（紀錄，`carried_from` 串起同一件工作的歷程）、`categories`、`entry_tags`、`tags`（用過的 tag）、`images`
+- `reporttool.db`：SQLite，包含 `entries`（紀錄，`carried_from` 串起同一件工作的歷程）、`categories`、`entry_tags`、`tags`（用過的 tag）、`images`、`meta`（裝置 id）
 - `images/YYYY-MM-DD/`：原始圖片
 
-要備份就複製整個 `data_dir`。歷史紀錄會一直保留；`Database.entries_between(start, end)` 可以直接拿來做週報。
+歷史紀錄會一直保留；`Database.entries_between(start, end)` 可以直接拿來做週報。
+
+為了之後和手機版同步，每筆紀錄有 uuid 與 UTC 修改時間，刪除的紀錄會留下不含內容的 tombstone。格式規格見 [docs/data-format.md](docs/data-format.md)。
+
+### 備份與匯入
+
+主視窗「備份 ▾」：
+
+- **匯出備份…**：所有紀錄（含圖片）存成一個 zip
+- **從備份匯入…**：把 zip 合併進目前的資料。同一筆紀錄以較晚修改的版本為準，所以重複匯入、或在兩台電腦間互相匯入都不會產生重複資料
+
+舊版資料庫會在第一次開啟時自動升級。
 
 ## 開發
 
@@ -102,7 +113,8 @@ tools/make_ico.py           產生 exe 圖示
 reporttool/
   app.py                    系統匣、全域快捷鍵、單一實例
   config.py                 讀 config/
-  db.py                     SQLite 資料層
+  db.py                     SQLite 資料層（含版本升級）
+  sync.py                   備份匯出／匯入與合併規則（之後手機同步共用）
   report.py                 工作回顧（資料夾、縮圖、report.md）
   slides.py                 匯出 PPT
   hotkey.py                 Windows RegisterHotKey
@@ -110,6 +122,9 @@ reporttool/
   ui/entry_dialog.py        新增／編輯／追加進度視窗
   ui/manage_dialog.py       管理分類與標籤
 tests/
+  golden/                   標準測試資料：輸入 bundle 與預期的 report.md（手機版也要通過）
+docs/
+  data-format.md            資料包、合併規則、report.md 格式規格
 ```
 
 之後要加的功能：
