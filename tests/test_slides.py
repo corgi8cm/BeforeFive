@@ -63,3 +63,13 @@ def test_export_uses_template(tmp_path):
 
     out = Presentation(str(export_slides(db, DATE, tmp_path / "out", template)))
     assert out.slide_width == prs.slide_width and len(out.slides) == 2
+
+
+def test_order_by_category():
+    from reporttool.slides import order_by_category
+
+    def e(text, category, tags=()):
+        return Entry(None, DATE, "00:00", text, "done", list(tags), category=category), []
+
+    items = [e("a", ""), e("b", "會議"), e("c", "開發", ["B"]), e("d", "開發", ["A"]), e("f", "開發", ["B"])]
+    assert [it[0].text for it in order_by_category(items, ["開發", "會議"])] == ["c", "f", "d", "b", "a"]

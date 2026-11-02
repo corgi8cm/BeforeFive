@@ -13,6 +13,7 @@ from pathlib import Path
 STATUSES = ("done", "doing", "blocked")
 STATUS_LABELS = {"done": "完成", "doing": "進行中", "blocked": "卡住"}
 UNFINISHED = ("doing", "blocked")
+DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -35,6 +36,11 @@ CREATE TABLE IF NOT EXISTS tags (
     name TEXT PRIMARY KEY,
     use_count INTEGER NOT NULL DEFAULT 0,
     last_used TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +70,9 @@ class Entry:
     status: str
     tags: list[str] = field(default_factory=list)
     images: list[Image] = field(default_factory=list)
-    carried_from: int | None = None
+    carried_from: int | None = None  # 從哪一筆延續（帶入或追加進度）
+    category_id: int | None = None
+    category: str = ""  # 分類名稱，讀取時填入
 
 
 def normalize_tag(tag: str) -> str:
@@ -93,6 +101,16 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(entries)")}
+        with self.conn:
+            if "category_id" not in columns:
+                self.conn.execute("ALTER TABLE entries ADD COLUMN category_id INTEGER REFERENCES categories(id)")
+                # 第一次建立分類欄位時給預設分類
+                for pos, name in enumerate(DEFAULT_CATEGORIES):
+                    self.conn.execute("INSERT OR IGNORE INTO categories (name, position) VALUES (?, ?)", (name, pos))
 
     def close(self):
         self.conn.close()
@@ -130,16 +148,17 @@ class Database:
         with self.conn:
             if entry.id is None:
                 cur = self.conn.execute(
-                    "INSERT INTO entries (date, time, text, status, carried_from, created_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (entry.date, entry.time, entry.text, entry.status, entry.carried_from, now, now),
+                    "INSERT INTO entries (date, time, text, status, carried_from, category_id, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.date, entry.time, entry.text, entry.status, entry.carried_from, entry.category_id,
+                     now, now),
                 )
                 entry.id = cur.lastrowid
                 old_tags = set()
             else:
                 self.conn.execute(
-                    "UPDATE entries SET date=?, time=?, text=?, status=?, updated_at=? WHERE id=?",
-                    (entry.date, entry.time, entry.text, entry.status, now, entry.id),
+                    "UPDATE entries SET date=?, time=?, text=?, status=?, category_id=?, updated_at=? WHERE id=?",
+                    (entry.date, entry.time, entry.text, entry.status, entry.category_id, now, entry.id),
                 )
                 old_tags = {r["tag"] for r in self.conn.execute(
                     "SELECT tag FROM entry_tags WHERE entry_id=?", (entry.id,))}
@@ -184,12 +203,35 @@ class Database:
             "SELECT tag FROM entry_tags WHERE entry_id=? ORDER BY rowid", (row["id"],))]
         images = [Image(r["id"], r["path"], r["original_name"], bool(r["include"])) for r in self.conn.execute(
             "SELECT * FROM images WHERE entry_id=? ORDER BY position", (row["id"],))]
+        category = self.conn.execute(
+            "SELECT name FROM categories WHERE id=?", (row["category_id"],)).fetchone()
         return Entry(row["id"], row["date"], row["time"], row["text"], row["status"], tags, images,
-                     row["carried_from"])
+                     row["carried_from"], row["category_id"], category["name"] if category else "")
 
     def get_entry(self, entry_id: int) -> Entry | None:
         row = self.conn.execute("SELECT * FROM entries WHERE id=?", (entry_id,)).fetchone()
         return self._load(row) if row else None
+
+    def last_entry(self) -> Entry | None:
+        """最近一次新增的紀錄，用來預設新紀錄的分類與 tag。"""
+        row = self.conn.execute("SELECT * FROM entries ORDER BY id DESC LIMIT 1").fetchone()
+        return self._load(row) if row else None
+
+    def set_status(self, entry_id: int, status: str):
+        with self.conn:
+            self.conn.execute("UPDATE entries SET status=?, updated_at=? WHERE id=?", (status, _now(), entry_id))
+
+    def history(self, entry_id: int | None) -> list[Entry]:
+        """沿著 carried_from 往前找這件工作先前的紀錄，由舊到新，不含 entry_id 本身。"""
+        chain = []
+        seen = set()
+        current = self.get_entry(entry_id) if entry_id else None
+        while current and current.carried_from and current.carried_from not in seen:
+            seen.add(current.carried_from)
+            current = self.get_entry(current.carried_from)
+            if current:
+                chain.append(current)
+        return chain[::-1]
 
     def entries_for_date(self, date: str) -> list[Entry]:
         return self.entries_between(date, date)
@@ -208,6 +250,76 @@ class Database:
     def recent_tags(self, limit: int = 8) -> list[str]:
         return [r["name"] for r in self.conn.execute(
             "SELECT name FROM tags ORDER BY last_used DESC, use_count DESC LIMIT ?", (limit,))]
+
+    def tag_usage(self) -> list[tuple[str, int]]:
+        """所有 tag 與使用中的紀錄數。"""
+        return [(r["name"], r["n"]) for r in self.conn.execute(
+            "SELECT t.name, COUNT(et.entry_id) AS n FROM tags t LEFT JOIN entry_tags et ON et.tag = t.name"
+            " GROUP BY t.name ORDER BY n DESC, t.name")]
+
+    def rename_tag(self, old: str, new: str):
+        """改名；新名稱已存在時等於合併。"""
+        new = normalize_tag(new)
+        if not new or new == old:
+            return
+        with self.conn:
+            # 同時有新舊兩個 tag 的紀錄，只留新的
+            self.conn.execute(
+                "DELETE FROM entry_tags WHERE tag=? AND entry_id IN (SELECT entry_id FROM entry_tags WHERE tag=?)",
+                (old, new))
+            self.conn.execute("UPDATE entry_tags SET tag=? WHERE tag=?", (new, old))
+            row = self.conn.execute("SELECT use_count, last_used FROM tags WHERE name=?", (old,)).fetchone()
+            if row:
+                self.conn.execute(
+                    "INSERT INTO tags (name, use_count, last_used) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET"
+                    " use_count = use_count + excluded.use_count, last_used = MAX(last_used, excluded.last_used)",
+                    (new, row["use_count"], row["last_used"]))
+                self.conn.execute("DELETE FROM tags WHERE name=?", (old,))
+
+    def delete_tag(self, name: str):
+        """從所有紀錄與建議清單中移除。"""
+        with self.conn:
+            self.conn.execute("DELETE FROM entry_tags WHERE tag=?", (name,))
+            self.conn.execute("DELETE FROM tags WHERE name=?", (name,))
+
+    # ---- 分類 ----
+
+    def categories(self) -> list[tuple[int, str]]:
+        return [(r["id"], r["name"]) for r in self.conn.execute(
+            "SELECT id, name FROM categories ORDER BY position, id")]
+
+    def category_usage(self, category_id: int) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM entries WHERE category_id=?", (category_id,)).fetchone()[0]
+
+    def _check_category_name(self, name: str, exclude_id: int = -1) -> str:
+        name = name.strip()
+        if not name:
+            raise ValueError("分類名稱不能是空的")
+        if self.conn.execute("SELECT 1 FROM categories WHERE name=? AND id<>?", (name, exclude_id)).fetchone():
+            raise ValueError(f"已經有「{name}」這個分類")
+        return name
+
+    def add_category(self, name: str) -> int:
+        name = self._check_category_name(name)
+        with self.conn:
+            pos = self.conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM categories").fetchone()[0]
+            return self.conn.execute("INSERT INTO categories (name, position) VALUES (?, ?)", (name, pos)).lastrowid
+
+    def rename_category(self, category_id: int, name: str):
+        name = self._check_category_name(name, category_id)
+        with self.conn:
+            self.conn.execute("UPDATE categories SET name=? WHERE id=?", (name, category_id))
+
+    def delete_category(self, category_id: int):
+        """刪除分類，原本屬於它的紀錄變成未分類。"""
+        with self.conn:
+            self.conn.execute("UPDATE entries SET category_id=NULL WHERE category_id=?", (category_id,))
+            self.conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
+
+    def reorder_categories(self, ids: list[int]):
+        with self.conn:
+            for pos, cid in enumerate(ids):
+                self.conn.execute("UPDATE categories SET position=? WHERE id=?", (pos, cid))
 
     # ---- 帶入未完成項目 ----
 
@@ -230,6 +342,6 @@ class Database:
         time = time or datetime.now().strftime("%H:%M")
         new_ids = []
         for old in self.carry_over_candidates(from_date, to_date):
-            new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id)
+            new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id)
             new_ids.append(self.save_entry(new))
         return new_ids

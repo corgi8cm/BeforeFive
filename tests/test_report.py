@@ -42,7 +42,7 @@ def test_generate_report(tmp_path):
         assert im.size == (800, 600)  # 小圖不放大
 
     md = (folder / "report.md").read_text(encoding="utf-8")
-    assert md.startswith(f"# 工作回報整理請求（{DATE}）\n\n## 指示\n- 依 tag 分組")
+    assert md.startswith(f"# 工作回報整理請求（{DATE}）\n\n## 指示\n- 先依紀錄中的 [分類：X]")
     assert "- [10:20][進行中][#專案A] 修登入頁 timeout 問題（附圖1：01_修登入頁timeout問題.png）" in md
     assert "- [14:05][完成][#專案A] timeout 修好，已送 PR（附圖2：02_timeout修好，已送PR.jpg、附圖3：未提供）" in md
     assert "- [16:00][卡住] 等待 DBA 開權限\n  已經寄信催了" in md
@@ -61,3 +61,13 @@ def test_regenerate_removes_old_images_only(tmp_path):
     generate_report(db, DATE, tmp_path / "out", "- x")
 
     assert sorted(p.name for p in folder.iterdir()) == ["report.md", "我的筆記.txt"]
+
+
+def test_category_and_continuation_in_line(tmp_path):
+    db = Database(tmp_path / "data")
+    cid = db.categories()[0][0]
+    first = db.save_entry(Entry(None, "2026-10-30", "09:00", "修登入頁", "doing", ["專案A"], category_id=cid))
+    db.save_entry(Entry(None, DATE, "10:00", "修好了", "done", ["專案A"], carried_from=first, category_id=cid))
+
+    md = (generate_report(db, DATE, tmp_path / "out", "- x") / "report.md").read_text(encoding="utf-8")
+    assert "- [10:00][完成][分類：開發][#專案A] 修好了（延續自 10-30）" in md

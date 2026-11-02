@@ -1,4 +1,4 @@
-"""匯出 PPT：封面 + 一則紀錄一頁，之後可以丟給 AI 美化。
+"""匯出 PPT：封面 + 一則紀錄一頁（依分類、再依 tag 排序），之後可以丟給 AI 美化。
 
 有 config/ppt_template.pptx 時會沿用它的投影片大小與主題（使用其中的空白版面配置），
 沒有就用內建的 16:9 樣式。
@@ -16,7 +16,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
 from .db import STATUS_LABELS, Database, Entry
-from .report import NumberedImage, format_entry_line, number_images, report_folder
+from .report import NumberedImage, continued_since, format_entry_line, number_images, report_folder
 
 FONT = "Microsoft JhengHei"
 STATUS_RGB = {"done": RGBColor(0x2E, 0x9D, 0x5B), "doing": RGBColor(0x2F, 0x6F, 0xD6),
@@ -26,6 +26,7 @@ STATUS_ORDER = {"done": 0, "doing": 1, "blocked": 2}
 DARK = RGBColor(0x22, 0x22, 0x22)
 MUTED = RGBColor(0x80, 0x80, 0x80)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+CATEGORY_RGB = RGBColor(0x5F, 0x63, 0x68)
 
 
 def order_by_tag(items: list[tuple[Entry, list]]) -> list[tuple[Entry, list]]:
@@ -36,6 +37,16 @@ def order_by_tag(items: list[tuple[Entry, list]]) -> list[tuple[Entry, list]]:
         groups.setdefault(tags[0] if tags else None, []).append(item)
     keys = [k for k in groups if k is not None] + ([None] if None in groups else [])
     return [item for k in keys for item in sorted(groups[k], key=lambda it: STATUS_ORDER[it[0].status])]
+
+
+def order_by_category(items: list[tuple[Entry, list]], category_order: list[str]) -> list[tuple[Entry, list]]:
+    """先依分類（照分類清單順序，未分類放最後），分類內再用 order_by_tag。"""
+    rank = {name: i for i, name in enumerate(category_order)}
+    groups: dict[str, list] = {}
+    for item in items:
+        groups.setdefault(item[0].category, []).append(item)
+    keys = sorted(groups, key=lambda name: (name == "", rank.get(name, len(rank)), name))
+    return [item for k in keys for item in order_by_tag(groups[k])]
 
 
 # ---- 繪圖小工具 ----
@@ -138,7 +149,7 @@ def _cover(prs, date: str, entries: list[Entry]):
 
 
 def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page: int, total: int,
-                 max_side: int):
+                 max_side: int, since: str | None):
     slide = prs.slides.add_slide(_blank_layout(prs))
     w, h = prs.slide_width, prs.slide_height
     color = STATUS_RGB[entry.status]
@@ -147,14 +158,19 @@ def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page
 
     _rect(slide, 0, 0, Inches(0.18), h, color)
 
-    # 第一行：時間、狀態、tag
+    # 第一行：時間、狀態、分類、tag
     _text(slide, margin, Inches(0.35), Inches(1.0), Inches(0.45), entry.time, 16, color=MUTED,
           anchor=MSO_ANCHOR.MIDDLE)
-    chip_w = _chip(slide, margin + Inches(1.0), Inches(0.37),
-                   f"{STATUS_ICONS[entry.status]} {STATUS_LABELS[entry.status]}", color)
-    if entry.tags:
-        _text(slide, margin + Inches(1.2) + chip_w, Inches(0.35), w - margin * 2 - Inches(3.5), Inches(0.45),
-              " ".join(f"#{t}" for t in entry.tags), 16, color=color, bold=True, anchor=MSO_ANCHOR.MIDDLE)
+    x = margin + Inches(1.0)
+    x += _chip(slide, x, Inches(0.37), f"{STATUS_ICONS[entry.status]} {STATUS_LABELS[entry.status]}", color)
+    if entry.category:
+        x += Inches(0.15) + _chip(slide, x + Inches(0.15), Inches(0.37), entry.category, CATEGORY_RGB)
+    tags = " ".join(f"#{t}" for t in entry.tags)
+    if since:
+        tags += f"　（延續自 {since[5:]}）"
+    if tags:
+        _text(slide, x + Inches(0.2), Inches(0.35), w - x - margin, Inches(0.45), tags.strip(), 16, color=color,
+              bold=True, anchor=MSO_ANCHOR.MIDDLE)
 
     # 內容：有圖時文字放左邊、圖片放右邊
     text_w = (w - margin * 2) * (0.45 if shown else 1.0)
@@ -172,7 +188,7 @@ def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page
     _text(slide, w - Inches(3.6), h - Inches(0.6), Inches(3.0), Inches(0.4), f"{date}　{page} / {total}", 11,
           color=MUTED, align=PP_ALIGN.RIGHT)
     # 備忘稿放原始紀錄，AI 美化時可以參考
-    slide.notes_slide.notes_text_frame.text = format_entry_line(entry, [img.ref for img in images])
+    slide.notes_slide.notes_text_frame.text = format_entry_line(entry, [img.ref for img in images], since)
 
 
 def _place_images(slide, images: list[NumberedImage], left, top, width, height, max_side):
@@ -203,9 +219,9 @@ def export_slides(db: Database, date: str, output_root, template: Path | None = 
         prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
 
     _cover(prs, date, entries)
-    items = order_by_tag(number_images(db, entries))
+    items = order_by_category(number_images(db, entries), [name for _id, name in db.categories()])
     for page, (entry, images) in enumerate(items, start=1):
-        _entry_slide(prs, entry, images, date, page, len(items), max_side)
+        _entry_slide(prs, entry, images, date, page, len(items), max_side, continued_since(db, entry))
 
     path = report_folder(output_root, date) / "report.pptx"
     prs.save(path)

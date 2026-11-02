@@ -34,12 +34,22 @@ def resize_image(src: Path, dst: Path, max_side: int = 1600):
             im.save(dst)
 
 
-def format_entry_line(entry: Entry, image_refs: list[str]) -> str:
+def continued_since(db: Database, entry: Entry) -> str | None:
+    """這件工作最早一筆紀錄的日期；不是延續的工作回傳 None。"""
+    history = db.history(entry.id)
+    return history[0].date if history else None
+
+
+def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None) -> str:
     head = f"[{entry.time}][{STATUS_LABELS[entry.status]}]"
+    if entry.category:
+        head += f"[分類：{entry.category}]"
     if entry.tags:
         head += "[" + " ".join(f"#{t}" for t in entry.tags) + "]"
     lines = entry.text.strip().replace("\r\n", "\n").split("\n")
     body = lines[0] + "".join(f"\n  {line}" for line in lines[1:])
+    if since:
+        body += f"（延續自 {since[5:]}）"
     if image_refs:
         body += "（" + "、".join(image_refs) + "）"
     return f"- {head} {body}"
@@ -110,7 +120,7 @@ def generate_report(db: Database, date: str, output_root, instructions: str, max
         for img in images:
             if img.available:
                 resize_image(img.src, folder / img.filename, max_side)
-        lines.append(format_entry_line(entry, [img.ref for img in images]))
+        lines.append(format_entry_line(entry, [img.ref for img in images], continued_since(db, entry)))
 
     (folder / "report.md").write_text(build_markdown(date, instructions, lines), encoding="utf-8")
     return folder

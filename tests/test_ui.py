@@ -67,3 +67,50 @@ def test_main_window_lists_entries(qapp, tmp_path):
     from PySide6.QtCore import QDate
     win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
     assert win.tree.topLevelItemCount() == 1
+
+
+def test_new_entry_defaults_to_last_category_and_tags(qapp, tmp_path):
+    db = Database(tmp_path)
+    cid = db.categories()[2][0]
+    db.save_entry(Entry(None, DATE, "09:00", "a", "done", ["專案A"], category_id=cid))
+    dlg = EntryDialog(db, DATE)
+    assert dlg.category_box.currentData() == cid
+    assert dlg.tag_edit.tags() == ["專案A"]
+
+
+def test_follow_up_links_to_previous(qapp, tmp_path):
+    db = Database(tmp_path)
+    cid = db.categories()[0][0]
+    old_id = db.save_entry(Entry(None, "2026-11-01", "09:00", "修登入頁", "blocked", ["專案A"], category_id=cid))
+    dlg = EntryDialog(db, DATE, follow_up_of=db.get_entry(old_id))
+    assert dlg.windowTitle().startswith("追加進度")
+    assert dlg.status_group.checkedButton().property("status") == "blocked"
+    assert dlg.text.toPlainText() == ""
+    dlg.text.setPlainText("DBA 已開權限")
+    dlg.status_group.buttons()[0].click()
+    dlg.save()
+    new = db.entries_for_date(DATE)[0]
+    assert new.carried_from == old_id and new.category_id == cid and new.tags == ["專案A"]
+
+
+def test_review_copies_markdown_and_manage_dialog(qapp, tmp_path, monkeypatch):
+    import reporttool.ui.main_window as mw
+    from reporttool.ui.manage_dialog import ManageDialog
+
+    monkeypatch.setattr(mw.os, "startfile", lambda *_: None)
+    db = Database(tmp_path / "data")
+    db.save_entry(Entry(None, DATE, "09:00", "寫週報", "done"))
+    settings = load_settings(tmp_path / "config")
+    settings.output_dir = tmp_path / "out"
+    win = MainWindow(db, settings)
+    from PySide6.QtCore import QDate
+    win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
+    win.review()
+    assert "寫週報" in QApplication.clipboard().text()
+
+    win.category_filter.setCurrentIndex(win.category_filter.findData(mw.UNCATEGORIZED))
+    assert win.tree.topLevelItemCount() == 1
+    win.category_filter.setCurrentIndex(1)  # 第一個分類，沒有紀錄
+    assert win.tree.topLevelItemCount() == 0
+
+    ManageDialog(db, win)  # 能建立即可

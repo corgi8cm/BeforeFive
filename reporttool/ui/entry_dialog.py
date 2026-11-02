@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QModelIndex, Qt, QTime, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QCompleter, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -184,12 +184,21 @@ class ImageStrip(QScrollArea):
 class EntryDialog(QDialog):
     saved = Signal(int)
 
-    def __init__(self, db: Database, entry_date: str, entry: Entry | None = None, parent=None):
+    def __init__(self, db: Database, entry_date: str, entry: Entry | None = None, parent=None,
+                 follow_up_of: Entry | None = None):
+        """entry：編輯既有紀錄；follow_up_of：替這筆工作追加一筆新進度（會串成同一件工作的歷程）。"""
         super().__init__(parent)
         self.db = db
         self.entry = entry
+        self.follow_up_of = follow_up_of
         self.entry_date = entry.date if entry else entry_date
-        self.setWindowTitle(f"編輯紀錄（{self.entry_date}）" if entry else f"快速記錄（{self.entry_date}）")
+        if entry:
+            title = "編輯紀錄"
+        elif follow_up_of:
+            title = "追加進度"
+        else:
+            title = "快速記錄"
+        self.setWindowTitle(f"{title}（{self.entry_date}）")
         self.setAcceptDrops(True)
         self.resize(600, 500)
 
@@ -219,8 +228,16 @@ class EntryDialog(QDialog):
         self.time_edit.setFixedWidth(70)
         status_row.addWidget(self.time_edit)
 
-        # tags
+        # 分類 + tags
+        self.category_box = QComboBox()
+        self.category_box.addItem("（未分類）", None)
+        for cid, name in db.categories():
+            self.category_box.addItem(name, cid)
+        self.category_box.setToolTip("分類")
         self.tag_edit = TagEdit(db.all_tags())
+        tag_row = QHBoxLayout()
+        tag_row.addWidget(self.category_box)
+        tag_row.addWidget(self.tag_edit, 1)
         chips = QHBoxLayout()
         chips.setSpacing(4)
         for tag in db.recent_tags(8):
@@ -250,10 +267,13 @@ class EntryDialog(QDialog):
         bottom.addWidget(save)
 
         layout = QVBoxLayout(self)
+        history = self._history_label()
+        if history:
+            layout.addWidget(history)
         self.text.setMinimumHeight(120)
         layout.addWidget(self.text, 1)
         layout.addLayout(status_row)
-        layout.addWidget(self.tag_edit)
+        layout.addLayout(tag_row)
         layout.addLayout(chips)
         layout.addWidget(self.strip)
         layout.addLayout(bottom)
@@ -264,13 +284,42 @@ class EntryDialog(QDialog):
         self._load(entry)
         self.text.setFocus()
 
+    def _history_label(self) -> QLabel | None:
+        """延續的工作在上方列出先前進度（最近 5 筆）。"""
+        if self.entry:
+            chain = self.db.history(self.entry.id)
+        elif self.follow_up_of:
+            chain = self.db.history(self.follow_up_of.id) + [self.follow_up_of]
+        else:
+            return None
+        if not chain:
+            return None
+        lines = [f"{e.date[5:]} {e.time}　[{STATUS_LABELS[e.status]}]　{e.text.strip().splitlines()[0]}"
+                 for e in chain[-5:]]
+        label = QLabel("先前進度：\n" + "\n".join(lines))
+        label.setWordWrap(True)
+        label.setStyleSheet("background:#f3f4f6; color:#444; padding:6px; border-radius:4px;")
+        return label
+
+    def _set_category(self, category_id):
+        index = self.category_box.findData(category_id)
+        self.category_box.setCurrentIndex(max(index, 0))
+
     def _load(self, entry: Entry | None):
-        status = entry.status if entry else "doing"
-        for btn in self.status_group.buttons():
-            btn.setChecked(btn.property("status") == status)
         if entry is None:
+            # 新紀錄：追加進度時沿用該工作的設定，否則沿用上一筆的分類與 tag
+            source = self.follow_up_of or self.db.last_entry()
+            status = self.follow_up_of.status if self.follow_up_of else "doing"
+            for btn in self.status_group.buttons():
+                btn.setChecked(btn.property("status") == status)
             self.time_edit.setTime(QTime.currentTime())
+            if source:
+                self._set_category(source.category_id)
+                self.tag_edit.set_tags(source.tags)
             return
+        for btn in self.status_group.buttons():
+            btn.setChecked(btn.property("status") == entry.status)
+        self._set_category(entry.category_id)
         self.time_edit.setTime(QTime.fromString(entry.time, "HH:mm"))
         self.text.setPlainText(entry.text)
         self.text.moveCursor(self.text.textCursor().MoveOperation.End)
@@ -322,7 +371,9 @@ class EntryDialog(QDialog):
             img.include = item.include
             images.append(img)
 
-        entry = self.entry or Entry(None, self.entry_date, "", "", "")
+        entry = self.entry or Entry(None, self.entry_date, "", "", "",
+                                    carried_from=self.follow_up_of.id if self.follow_up_of else None)
+        entry.category_id = self.category_box.currentData()
         entry.time = self.time_edit.time().toString("HH:mm")
         entry.text = text
         entry.status = self.status_group.checkedButton().property("status")
