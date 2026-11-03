@@ -138,3 +138,11 @@ def test_backup_export_and_import(qapp, tmp_path, monkeypatch):
     win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
     win.import_backup()
     assert len(win.entry_items()) == 1
+
+
+def test_closing_main_window_really_closes(qapp, tmp_path):
+    """不再縮到系統匣：關掉主視窗就關閉（程式在最後一個視窗關閉時結束）。"""
+    win = MainWindow(Database(tmp_path / "data"), load_settings(tmp_path / "config"))
+    win.show()
+    assert win.close() and not win.isVisible()
+    assert qapp.quitOnLastWindowClosed()

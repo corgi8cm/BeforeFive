@@ -1,11 +1,11 @@
-"""程式進入點：單一實例、系統匣、全域快捷鍵。"""
+"""程式進入點：單一實例、全域快捷鍵。關掉主視窗就結束程式，不會留在背景。"""
 import getpass
 import sys
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .config import load_settings
 from .db import Database
@@ -36,7 +36,6 @@ def make_icon() -> QIcon:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("ReportTool")
-    app.setQuitOnLastWindowClosed(False)
 
     # 已經在執行就叫出現有視窗
     server_name = f"ReportTool-{getpass.getuser()}"
@@ -58,23 +57,6 @@ def main() -> int:
     window = MainWindow(db, settings)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), window.show_and_raise()))
 
-    tray = QSystemTrayIcon(icon)
-    tray.setToolTip(f"工作回報工具（{settings.hotkey} 快速記錄）")
-    menu = QMenu()
-    for text, slot in (("快速記錄", window.open_quick_entry), ("開啟主視窗", window.show_and_raise),
-                       ("工作回顧（今天）", lambda: (window.go_today(), window.review()))):
-        action = QAction(text, menu)
-        action.triggered.connect(slot)
-        menu.addAction(action)
-    menu.addSeparator()
-    quit_action = QAction("結束", menu)
-    menu.addAction(quit_action)
-    tray.setContextMenu(menu)
-    tray.activated.connect(
-        lambda reason: window.show_and_raise() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
-    tray.show()
-    window.tray = tray
-
     bridge = HotkeyBridge()
     bridge.pressed.connect(window.open_quick_entry)
     hotkey = GlobalHotkey(settings.hotkey, bridge.pressed.emit)
@@ -83,14 +65,11 @@ def main() -> int:
     else:
         QMessageBox.warning(window, "快捷鍵", f"{hotkey.error}\n\n可以到 config/settings.json 修改 hotkey 後重開程式。")
 
-    def quit_app():
-        window.quitting = True
+    def cleanup():
         hotkey.stop()
-        tray.hide()
         db.close()
-        app.quit()
 
-    quit_action.triggered.connect(quit_app)
+    app.aboutToQuit.connect(cleanup)
 
     window.show()
     return app.exec()

@@ -57,9 +57,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db
         self.settings = settings
-        self.quitting = False
         self._quick_dialog = None
-        self._tray_hint_shown = False
         self.setWindowTitle("工作回報工具")
         self.resize(820, 520)
 
@@ -359,7 +357,7 @@ class MainWindow(QMainWindow):
         try:
             folder = generate_report(self.db, d, self.settings.output_dir, load_instructions(self.settings),
                                      self.settings.max_image_side)
-        except Exception as e:  # 顯示給使用者，避免在系統匣模式下靜默失敗
+        except Exception as e:  # 顯示給使用者，避免靜默失敗
             QMessageBox.critical(self, "產生失敗", str(e))
             return
         # 順便把 report.md 內容放進剪貼簿，到 AI 網頁直接貼上
@@ -435,16 +433,6 @@ class MainWindow(QMainWindow):
             self.go_today()
         self.showNormal()
         bring_to_front(self)
-
-    def closeEvent(self, event):
-        if self.quitting:
-            event.accept()
-            return
-        event.ignore()
-        self.hide()
-        if not self._tray_hint_shown and hasattr(self, "tray"):
-            self.tray.showMessage("工作回報工具", f"程式仍在系統匣執行，按 {self.settings.hotkey} 可快速記錄。")
-            self._tray_hint_shown = True
 
 
 def bring_to_front(widget):
