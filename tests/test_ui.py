@@ -66,7 +66,7 @@ def test_main_window_lists_entries(qapp, tmp_path):
     win = MainWindow(db, settings)
     from PySide6.QtCore import QDate
     win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
-    assert win.tree.topLevelItemCount() == 1
+    assert len(win.entry_items()) == 1
 
 
 def test_new_entry_defaults_to_last_category_and_tags(qapp, tmp_path):
@@ -109,9 +109,9 @@ def test_review_copies_markdown_and_manage_dialog(qapp, tmp_path, monkeypatch):
     assert "寫週報" in QApplication.clipboard().text()
 
     win.category_filter.setCurrentIndex(win.category_filter.findData(mw.UNCATEGORIZED))
-    assert win.tree.topLevelItemCount() == 1
+    assert len(win.entry_items()) == 1
     win.category_filter.setCurrentIndex(1)  # 第一個分類，沒有紀錄
-    assert win.tree.topLevelItemCount() == 0
+    assert len(win.entry_items()) == 0
 
     ManageDialog(db, win)  # 能建立即可
 
@@ -137,4 +137,4 @@ def test_backup_export_and_import(qapp, tmp_path, monkeypatch):
     win = mw.MainWindow(b, settings)
     win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
     win.import_backup()
-    assert win.tree.topLevelItemCount() == 1
+    assert len(win.entry_items()) == 1

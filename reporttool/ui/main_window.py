@@ -4,14 +4,15 @@ import subprocess
 from datetime import date
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView, QMainWindow,
-    QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
+    QVBoxLayout, QWidget,
 )
 
 from ..config import Settings, load_instructions
-from ..db import STATUS_LABELS, Database
+from ..db import STATUS_LABELS, Database, Entry
 from ..report import generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
@@ -20,6 +21,27 @@ from .manage_dialog import ManageDialog
 
 STATUS_ICONS = {"done": "✅", "doing": "🔄", "blocked": "⛔"}
 ALL, UNCATEGORIZED = "all", "none"
+NO_TAG_LABEL = "沒有 tag"
+UNCATEGORIZED_LABEL = "未分類"
+GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展開／收合狀態
+
+
+def group_by_tag(entries: list[Entry]) -> list[tuple[str | None, list[Entry]]]:
+    """依第一個 tag 分組（和回報、PPT 相同規則）。組的順序依最早一筆的時間，沒有 tag 的放最後。"""
+    groups: dict[str | None, list[Entry]] = {}
+    for e in entries:
+        groups.setdefault(e.tags[0] if e.tags else None, []).append(e)
+    untagged = groups.pop(None, None)
+    return list(groups.items()) + ([(None, untagged)] if untagged else [])
+
+
+def group_by_category(entries: list[Entry], category_order: list[str]) -> list[tuple[str, list[Entry]]]:
+    """依分類分組，順序照「管理分類」，未分類放最後；沒有紀錄的分類不列出。"""
+    order = {name: i for i, name in enumerate(category_order)}
+    groups: dict[str, list[Entry]] = {}
+    for e in entries:
+        groups.setdefault(e.category, []).append(e)
+    return sorted(groups.items(), key=lambda kv: (kv[0] == "", order.get(kv[0], len(order)), kv[0]))
 
 
 def open_path(path):
@@ -61,6 +83,11 @@ class MainWindow(QMainWindow):
         self.category_filter.setToolTip("依分類篩選")
         self.category_filter.currentIndexChanged.connect(lambda _i: self.refresh())
         top.addWidget(self.category_filter)
+        self.group_box = QCheckBox("依 tag 分組")
+        self.group_box.setChecked(True)
+        self.group_box.setToolTip("相同 tag 的紀錄放在同一組（以第一個 tag 為準）；選「全部分類」時先分分類、再分 tag")
+        self.group_box.toggled.connect(lambda _c: self.refresh())
+        top.addWidget(self.group_box)
         top.addStretch()
         top.addWidget(button("＋ 新增紀錄", self.new_entry, f"全域快捷鍵：{settings.hotkey}"))
         top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中「進行中／卡住」的項目帶進這一天"))
@@ -74,7 +101,11 @@ class MainWindow(QMainWindow):
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
+        # 雙擊群組標題是展開／收合，只有雙擊紀錄才編輯
+        self.tree.itemDoubleClicked.connect(lambda item, _c: self.edit_selected() if self._entry_id(item) else None)
+        self._collapsed = set()
+        self.tree.itemCollapsed.connect(lambda item: self._collapsed.add(item.data(0, GROUP_KEY)))
+        self.tree.itemExpanded.connect(lambda item: self._collapsed.discard(item.data(0, GROUP_KEY)))
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         header = self.tree.header()
@@ -138,23 +169,64 @@ class MainWindow(QMainWindow):
             return entry.category_id is None
         return entry.category_id == selected
 
+    def _entry_item(self, e: Entry) -> QTreeWidgetItem:
+        first_line = e.text.strip().splitlines()[0] if e.text.strip() else ""
+        if e.carried_from:
+            first_line = "↪ " + first_line
+        n_img = len(e.images)
+        n_ai = sum(i.include for i in e.images)
+        img_text = f"{n_img}" + (f"（{n_ai} 給 AI）" if n_ai != n_img else "") if n_img else ""
+        item = QTreeWidgetItem([e.time, f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}", e.category,
+                                " ".join(f"#{t}" for t in e.tags), first_line, img_text])
+        item.setForeground(1, Qt.GlobalColor.white)
+        item.setBackground(1, QColor(STATUS_COLORS[e.status]))
+        item.setToolTip(4, self._tooltip(e))
+        item.setData(0, Qt.UserRole, e.id)
+        return item
+
+    def _group_item(self, parent, title: str, count: int, key) -> QTreeWidgetItem:
+        item = QTreeWidgetItem([f"{title}（{count}）"])
+        item.setFlags(Qt.ItemIsEnabled)  # 不能選取，避免被當成紀錄編輯或刪除
+        font = QFont(item.font(0))
+        font.setBold(True)
+        item.setFont(0, font)
+        item.setData(0, GROUP_KEY, key)
+        if parent is None:
+            self.tree.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+        item.setFirstColumnSpanned(True)
+        return item
+
+    def _add_tag_groups(self, parent, entries: list[Entry], key_prefix: str):
+        for tag, members in group_by_tag(entries):
+            group = self._group_item(parent, f"#{tag}" if tag else NO_TAG_LABEL, len(members), (key_prefix, tag))
+            group.addChildren([self._entry_item(e) for e in members])
+
     def refresh(self):
         self.tree.clear()
         entries = [e for e in self.db.entries_for_date(self.current_date) if self._visible(e)]
-        for e in entries:
-            first_line = e.text.strip().splitlines()[0] if e.text.strip() else ""
-            if e.carried_from:
-                first_line = "↪ " + first_line
-            n_img = len(e.images)
-            n_ai = sum(i.include for i in e.images)
-            img_text = f"{n_img}" + (f"（{n_ai} 給 AI）" if n_ai != n_img else "") if n_img else ""
-            item = QTreeWidgetItem([e.time, f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}", e.category,
-                                    " ".join(f"#{t}" for t in e.tags), first_line, img_text])
-            item.setForeground(1, Qt.GlobalColor.white)
-            item.setBackground(1, QColor(STATUS_COLORS[e.status]))
-            item.setToolTip(4, self._tooltip(e))
-            item.setData(0, Qt.UserRole, e.id)
-            self.tree.addTopLevelItem(item)
+        grouped = self.group_box.isChecked()
+        self.tree.setRootIsDecorated(grouped)
+        if not grouped:
+            self.tree.addTopLevelItems([self._entry_item(e) for e in entries])
+        elif self.category_filter.currentData() in (None, ALL):
+            for category, members in group_by_category(entries, [n for _, n in self.db.categories()]):
+                group = self._group_item(None, f"【{category or UNCATEGORIZED_LABEL}】", len(members), category)
+                self._add_tag_groups(group, members, category)
+        else:
+            self._add_tag_groups(None, entries, self.category_filter.currentText())
+
+        # 還原使用者收合過的群組；過程中不要觸發 itemExpanded 改到 _collapsed
+        self.tree.blockSignals(True)
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            item = it.value()
+            if item.childCount():
+                item.setExpanded(item.data(0, GROUP_KEY) not in self._collapsed)
+            it += 1
+        self.tree.blockSignals(False)
+
         counts = {s: sum(e.status == s for e in entries) for s in STATUS_LABELS}
         scope = "" if self.category_filter.currentData() in (None, ALL) else f"［{self.category_filter.currentText()}］"
         self.statusBar().showMessage(
@@ -168,16 +240,29 @@ class MainWindow(QMainWindow):
         lines = [f"{e.date[5:]} [{STATUS_LABELS[e.status]}] {e.text.strip().splitlines()[0]}" for e in history[-5:]]
         return entry.text + "\n\n先前進度：\n" + "\n".join(lines)
 
-    def _selected_id(self):
-        item = self.tree.currentItem()
+    @staticmethod
+    def _entry_id(item):
         return item.data(0, Qt.UserRole) if item else None
+
+    def entry_items(self) -> list[QTreeWidgetItem]:
+        """清單中所有紀錄（不含群組標題）。"""
+        items = []
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            if self._entry_id(it.value()):
+                items.append(it.value())
+            it += 1
+        return items
+
+    def _selected_id(self):
+        return self._entry_id(self.tree.currentItem())
 
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
-        if item is None:
+        entry_id = self._entry_id(item)
+        if entry_id is None:
             return
         self.tree.setCurrentItem(item)
-        entry_id = item.data(0, Qt.UserRole)
         entry = self.db.get_entry(entry_id)
         menu = QMenu(self)
         for status, label in STATUS_LABELS.items():
