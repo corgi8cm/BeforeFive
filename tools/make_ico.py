@@ -1,4 +1,4 @@
-"""把系統匣圖示存成 .ico，給 PyInstaller 當 exe 圖示。用法：python tools/make_ico.py 輸出路徑"""
+"""Save the app icon as .ico for the PyInstaller exe. Usage: python tools/make_ico.py OUTPUT_PATH"""
 import os
 import sys
 from pathlib import Path

@@ -1,10 +1,9 @@
 @echo off
-rem 打包成單一 exe：dist\ReportTool.exe。暫存檔放 %LOCALAPPDATA%，避免被 OneDrive 同步。
-chcp 65001 >nul
+rem Build a single-file exe: dist\ReportTool.exe. Temp files go to %LOCALAPPDATA% so OneDrive does not sync them.
 set VENV=%LOCALAPPDATA%\ReportTool\venv
 set WORK=%LOCALAPPDATA%\ReportTool\build
 if not exist "%VENV%\Scripts\python.exe" (
-    echo 找不到虛擬環境，請先執行 setup.bat
+    echo Virtual environment not found. Run setup.bat first.
     pause
     exit /b 1
 )
@@ -20,11 +19,11 @@ if not exist "%WORK%" mkdir "%WORK%"
     --exclude-module PySide6.QtMultimedia --exclude-module PySide6.QtCharts --exclude-module PySide6.QtPdf ^
     "%~dp0main.py" || goto :fail
 echo.
-echo 完成：%~dp0dist\ReportTool.exe
-echo 第一次執行會在 exe 旁邊建立 config\ 資料夾。
+echo Done: %~dp0dist\ReportTool.exe
+echo On first run, a config\ folder is created next to the exe.
 pause
 exit /b 0
 :fail
-echo 打包失敗
+echo Build failed.
 pause
 exit /b 1
