@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ..db import STATUS_LABELS, Database, Entry, Image, parse_tags
+from ..db import DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, Database, Entry, Image, parse_tags
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 STATUS_COLORS = {"done": "#2e9d5b", "doing": "#2f6fd6", "blocked": "#d64545"}
@@ -224,6 +224,13 @@ class EntryDialog(QDialog):
             status_row.addWidget(btn)
             QShortcut(QKeySequence(f"Alt+{i}"), self, activated=btn.click)
         status_row.addStretch()
+        status_row.addWidget(QLabel("優先"))
+        self.priority_box = QComboBox()
+        for p in PRIORITIES:
+            self.priority_box.addItem({1: "1 最優先", 5: "5 最不急"}.get(p, str(p)), p)
+        self.priority_box.setFixedWidth(100)
+        self.priority_box.setToolTip("執行優先順序，主視窗同一組內優先的排前面")
+        status_row.addWidget(self.priority_box)
         status_row.addWidget(QLabel("時間"))
         self.time_edit = QTimeEdit()
         self.time_edit.setDisplayFormat("HH:mm")
@@ -305,6 +312,9 @@ class EntryDialog(QDialog):
         label.setStyleSheet("background:#f3f4f6; color:#444; padding:6px; border-radius:4px;")
         return label
 
+    def _set_priority(self, priority: int):
+        self.priority_box.setCurrentIndex(max(self.priority_box.findData(priority), 0))
+
     def _set_category(self, category_id):
         index = self.category_box.findData(category_id)
         self.category_box.setCurrentIndex(max(index, 0))
@@ -317,6 +327,7 @@ class EntryDialog(QDialog):
             for btn in self.status_group.buttons():
                 btn.setChecked(btn.property("status") == status)
             self.time_edit.setTime(QTime.currentTime())
+            self._set_priority(self.follow_up_of.priority if self.follow_up_of else DEFAULT_PRIORITY)
             if source:
                 self._set_category(source.category_id)
                 self.tag_edit.set_tags(source.tags)
@@ -328,6 +339,7 @@ class EntryDialog(QDialog):
         self._set_category(entry.category_id)
         self.time_edit.setTime(QTime.fromString(entry.time, "HH:mm"))
         self.title_edit.setText(entry.title)
+        self._set_priority(entry.priority)
         self.text.setPlainText(entry.text)
         self.text.moveCursor(self.text.textCursor().MoveOperation.End)
         self.tag_edit.set_tags(entry.tags)
@@ -386,6 +398,7 @@ class EntryDialog(QDialog):
         entry.title = title
         entry.text = text
         entry.status = self.status_group.checkedButton().property("status")
+        entry.priority = self.priority_box.currentData()
         entry.tags = self.tag_edit.tags()
         entry.images = images
         entry_id = self.db.save_entry(entry)

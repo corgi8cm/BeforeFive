@@ -27,16 +27,17 @@ DARK = RGBColor(0x22, 0x22, 0x22)
 MUTED = RGBColor(0x80, 0x80, 0x80)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 CATEGORY_RGB = RGBColor(0x5F, 0x63, 0x68)
+PRIORITY_RGB = {1: RGBColor(0xD6, 0x45, 0x45), 2: RGBColor(0xE0, 0x8A, 0x00)}
 
 
 def order_by_tag(items: list[tuple[Entry, list]]) -> list[tuple[Entry, list]]:
-    """依第一個 tag 分組（照第一次出現的順序），組內依 完成→進行中→卡住、再依時間；沒有 tag 的放最後。"""
+    """依第一個 tag 分組（照第一次出現的順序），組內依 優先順序→完成／進行中／卡住→時間；沒有 tag 的放最後。"""
     groups: dict[str | None, list] = {}
     for item in items:
         tags = item[0].tags
         groups.setdefault(tags[0] if tags else None, []).append(item)
     keys = [k for k in groups if k is not None] + ([None] if None in groups else [])
-    return [item for k in keys for item in sorted(groups[k], key=lambda it: STATUS_ORDER[it[0].status])]
+    return [item for k in keys for item in sorted(groups[k], key=lambda it: (it[0].priority, STATUS_ORDER[it[0].status]))]
 
 
 def order_by_category(items: list[tuple[Entry, list]], category_order: list[str]) -> list[tuple[Entry, list]]:
@@ -163,6 +164,8 @@ def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page
           anchor=MSO_ANCHOR.MIDDLE)
     x = margin + Inches(1.0)
     x += _chip(slide, x, Inches(0.37), f"{STATUS_ICONS[entry.status]} {STATUS_LABELS[entry.status]}", color)
+    x += Inches(0.15) + _chip(slide, x + Inches(0.15), Inches(0.37), f"優先 {entry.priority}",
+                              PRIORITY_RGB.get(entry.priority, CATEGORY_RGB))
     if entry.category:
         x += Inches(0.15) + _chip(slide, x + Inches(0.15), Inches(0.37), entry.category, CATEGORY_RGB)
     tags = " ".join(f"#{t}" for t in entry.tags)

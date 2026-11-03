@@ -55,8 +55,9 @@ def test_report_line_and_image_name_use_title(tmp_path):
     db.save_entry(Entry(None, DATE, "10:00", "", "done", title="只有標題"))
     folder = generate_report(db, DATE, tmp_path / "out", DEFAULT_INSTRUCTIONS)
     md = (folder / "report.md").read_text(encoding="utf-8")
-    assert "- [09:00][進行中] 【登入 timeout】查到原因\n  改設定檔（附圖1：01_登入timeout.png）" in md
-    assert "- [10:00][完成] 【只有標題】\n" in md
+    assert "- [09:00][進行中][優先3] 【登入 timeout】查到原因\n  改設定檔（![附圖1]）" in md
+    assert md.endswith("[附圖1]: <01_登入timeout.png>\n")
+    assert "- [10:00][完成][優先3] 【只有標題】\n" in md
     assert (folder / "01_登入timeout.png").exists()
 
 

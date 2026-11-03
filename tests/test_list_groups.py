@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from reporttool.config import load_settings
 from reporttool.db import Database, Entry
-from reporttool.ui.main_window import MainWindow, group_by_category, group_by_tag
+from reporttool.ui.main_window import CONTENT_COL, MainWindow, group_by_category, group_by_tag
 
 DATE = "2026-11-02"
 
@@ -40,7 +40,7 @@ def tree_outline(win):
     def node(item):
         if item.childCount():
             return (item.text(0), [node(item.child(i)) for i in range(item.childCount())])
-        return item.text(4)
+        return item.text(CONTENT_COL)
     return [node(win.tree.topLevelItem(i)) for i in range(win.tree.topLevelItemCount())]
 
 

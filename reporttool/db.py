@@ -20,7 +20,9 @@ STATUSES = ("done", "doing", "blocked")
 STATUS_LABELS = {"done": "完成", "doing": "進行中", "blocked": "卡住"}
 UNFINISHED = ("doing", "blocked")
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
-SCHEMA_VERSION = 3
+PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
+DEFAULT_PRIORITY = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -84,6 +86,7 @@ class Entry:
     category: str = ""  # 分類名稱，讀取時填入
     uuid: str = ""  # 新增時自動產生
     title: str = ""  # 可省略
+    priority: int = DEFAULT_PRIORITY
 
     @property
     def summary(self) -> str:
@@ -147,7 +150,8 @@ class Database:
     def _migrate(self):
         """依 PRAGMA user_version 逐步升級。每一步都會先檢查欄位，重複執行也安全。"""
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3}
+        steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
+                 4: self._migrate_v4}
         for target in range(version + 1, SCHEMA_VERSION + 1):
             with self.conn:
                 steps[target]()
@@ -185,6 +189,11 @@ class Database:
         """紀錄標題。"""
         if "title" not in self._columns("entries"):
             self.conn.execute("ALTER TABLE entries ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_v4(self):
+        """執行優先順序（1~5，1 最優先）。"""
+        if "priority" not in self._columns("entries"):
+            self.conn.execute(f"ALTER TABLE entries ADD COLUMN priority INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}")
 
     @property
     def device_id(self) -> str:
@@ -234,18 +243,19 @@ class Database:
             if entry.id is None:
                 entry.uuid = entry.uuid or new_uuid()
                 cur = self.conn.execute(
-                    "INSERT INTO entries (uuid, date, time, title, text, status, carried_from, category_id,"
-                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (entry.uuid, entry.date, entry.time, entry.title, entry.text, entry.status, entry.carried_from,
-                     entry.category_id, now, now),
+                    "INSERT INTO entries (uuid, date, time, title, text, status, priority, carried_from,"
+                    " category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.uuid, entry.date, entry.time, entry.title, entry.text, entry.status, entry.priority,
+                     entry.carried_from, entry.category_id, now, now),
                 )
                 entry.id = cur.lastrowid
                 old_tags = set()
             else:
                 self.conn.execute(
-                    "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, category_id=?, updated_at=?"
-                    " WHERE id=?",
-                    (entry.date, entry.time, entry.title, entry.text, entry.status, entry.category_id, now, entry.id),
+                    "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, priority=?, category_id=?,"
+                    " updated_at=? WHERE id=?",
+                    (entry.date, entry.time, entry.title, entry.text, entry.status, entry.priority, entry.category_id,
+                     now, entry.id),
                 )
                 old_tags = {r["tag"] for r in self.conn.execute(
                     "SELECT tag FROM entry_tags WHERE entry_id=?", (entry.id,))}
@@ -299,7 +309,7 @@ class Database:
             "SELECT name FROM categories WHERE id=?", (row["category_id"],)).fetchone()
         return Entry(row["id"], row["date"], row["time"], row["text"], row["status"], tags, images,
                      row["carried_from"], row["category_id"], category["name"] if category else "", row["uuid"],
-                     row["title"])
+                     row["title"], row["priority"])
 
     def get_entry(self, entry_id: int) -> Entry | None:
         row = self.conn.execute(f"SELECT * FROM entries WHERE id=? AND {LIVE}", (entry_id,)).fetchone()
@@ -478,6 +488,6 @@ class Database:
         new_ids = []
         for old in self.carry_over_candidates(from_date, to_date):
             new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id,
-                        title=old.title)
+                        title=old.title, priority=old.priority)
             new_ids.append(self.save_entry(new))
         return new_ids

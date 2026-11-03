@@ -12,7 +12,7 @@ import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from .db import LIVE, STATUSES, Database, utc_now
+from .db import DEFAULT_PRIORITY, LIVE, PRIORITIES, STATUSES, Database, utc_now
 
 FORMAT = "reporttool-bundle"
 FORMAT_VERSION = 1
@@ -43,6 +43,7 @@ def _entry_record(db: Database, row) -> dict:
         "title": row["title"],
         "text": row["text"],
         "status": row["status"],
+        "priority": row["priority"],
         "category": category["name"] if category else None,
         "tags": tags,
         "images": images,
@@ -108,6 +109,8 @@ def validate(data: dict):
         _require(e.get("status") in STATUSES, f"紀錄 {name} 的狀態不正確")
         _require(isinstance(e.get("text"), str), f"紀錄 {name} 缺少內容")
         _require(isinstance(e.get("title", ""), str), f"紀錄 {name} 的標題格式錯誤")
+        _require(e.get("priority", DEFAULT_PRIORITY) in PRIORITIES and not isinstance(e.get("priority"), bool),
+                 f"紀錄 {name} 的優先順序不正確")
         _require(_TIME.match(e.get("created_at") or "") and _TIME.match(e.get("updated_at") or ""),
                  f"紀錄 {name} 的時間戳記格式錯誤")
         _require(e.get("deleted_at") is None or _TIME.match(e["deleted_at"]), f"紀錄 {name} deleted_at 格式錯誤")
@@ -159,7 +162,8 @@ def _merge_category(db: Database, c: dict, stats: dict):
 
 
 def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list):
-    e = {**e, "title": e.get("title", "")}  # 沒有標題欄位的舊資料包當作沒有標題
+    # 舊資料包沒有這些欄位：當作沒有標題、預設優先順序
+    e = {**e, "title": e.get("title", ""), "priority": e.get("priority", DEFAULT_PRIORITY)}
     row = db.conn.execute("SELECT * FROM entries WHERE uuid=?", (e["uuid"],)).fetchone()
     if row and not _incoming_wins(_entry_record(db, row), e):
         return
@@ -178,18 +182,19 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
     category_id = _category_id(db, e.get("category"), e["updated_at"])
     if row is None:
         entry_id = db.conn.execute(
-            "INSERT INTO entries (uuid, date, time, title, text, status, category_id, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (e["uuid"], e["date"], e["time"], e["title"], e["text"], e["status"], category_id, e["created_at"],
-             e["updated_at"])).lastrowid
+            "INSERT INTO entries (uuid, date, time, title, text, status, priority, category_id, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (e["uuid"], e["date"], e["time"], e["title"], e["text"], e["status"], e["priority"], category_id,
+             e["created_at"], e["updated_at"])).lastrowid
         old_tags, old_images = set(), {}
         stats["added"] += 1
     else:
         entry_id = row["id"]
         db.conn.execute(
-            "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, category_id=?, updated_at=?,"
-            " deleted_at=NULL WHERE id=?",
-            (e["date"], e["time"], e["title"], e["text"], e["status"], category_id, e["updated_at"], entry_id))
+            "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, priority=?, category_id=?,"
+            " updated_at=?, deleted_at=NULL WHERE id=?",
+            (e["date"], e["time"], e["title"], e["text"], e["status"], e["priority"], category_id,
+             e["updated_at"], entry_id))
         old_tags = {r["tag"] for r in db.conn.execute("SELECT tag FROM entry_tags WHERE entry_id=?", (entry_id,))}
         old_images = {r["path"]: r["id"] for r in db.conn.execute(
             "SELECT id, path FROM images WHERE entry_id=?", (entry_id,))}

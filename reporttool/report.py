@@ -1,6 +1,7 @@
 """工作回顧：把某天的紀錄整理成 report_YYYY-MM-DD/ 資料夾。"""
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image as PILImage, ImageOps
@@ -41,7 +42,7 @@ def continued_since(db: Database, entry: Entry) -> str | None:
 
 
 def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None) -> str:
-    head = f"[{entry.time}][{STATUS_LABELS[entry.status]}]"
+    head = f"[{entry.time}][{STATUS_LABELS[entry.status]}][優先{entry.priority}]"
     if entry.category:
         head += f"[分類：{entry.category}]"
     if entry.tags:
@@ -57,12 +58,18 @@ def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = N
     return f"- {head} {body}"
 
 
-def build_markdown(date: str, instructions: str, entry_lines: list[str]) -> str:
+def image_definitions(definitions: list[str]) -> str:
+    """放在檔案最後的圖片引用定義，前面空一行。"""
+    return "\n" + "\n".join(definitions) + "\n" if definitions else ""
+
+
+def build_markdown(date: str, instructions: str, entry_lines: list[str], definitions: list[str] = ()) -> str:
     records = "\n".join(entry_lines) if entry_lines else "（今天沒有紀錄）"
     return (
         f"# 工作回報整理請求（{date}）\n\n"
         f"## 指示\n{instructions.strip()}\n\n"
         f"## 今日工作紀錄\n{records}\n"
+        + image_definitions(list(definitions))
     )
 
 
@@ -92,6 +99,15 @@ class NumberedImage:
     def available(self) -> bool:
         return self.include and self.src.exists()
 
+    @property
+    def md_ref(self) -> str:
+        """report.md 用的寫法：有圖時用引用圖片 ![附圖N]，檔名寫在檔案最後的定義。"""
+        return f"![附圖{self.number}]" if self.available else self.ref
+
+    @property
+    def definition(self) -> str:
+        return f"[附圖{self.number}]: <{self.filename}>"
+
 
 def number_images(db: Database, entries: list[Entry]) -> list[tuple[Entry, list[NumberedImage]]]:
     """依紀錄時間順序替圖片編號，report.md 與 PPT 共用同一套編號。"""
@@ -113,16 +129,65 @@ def report_folder(output_root, date: str) -> Path:
     return folder
 
 
-def generate_report(db: Database, date: str, output_root, instructions: str, max_side: int = 1600) -> Path:
-    folder = report_folder(output_root, date)
+def _write_entries(db: Database, entries: list[Entry], folder: Path,
+                   max_side: int) -> tuple[list[tuple[Entry, str]], list[str]]:
+    """複製附圖到 folder。回傳（每筆紀錄與它在 report.md 中的那一行, 圖片引用定義）。"""
     _clear_previous_output(folder)
-
-    lines = []
-    for entry, images in number_images(db, db.entries_for_date(date)):
+    lines, definitions = [], []
+    for entry, images in number_images(db, entries):
         for img in images:
             if img.available:
                 resize_image(img.src, folder / img.filename, max_side)
-        lines.append(format_entry_line(entry, [img.ref for img in images], continued_since(db, entry)))
+                definitions.append(img.definition)
+        lines.append((entry, format_entry_line(entry, [img.md_ref for img in images], continued_since(db, entry))))
+    return lines, definitions
 
-    (folder / "report.md").write_text(build_markdown(date, instructions, lines), encoding="utf-8")
+
+def generate_report(db: Database, date: str, output_root, instructions: str, max_side: int = 1600) -> Path:
+    folder = report_folder(output_root, date)
+    written, definitions = _write_entries(db, db.entries_for_date(date), folder, max_side)
+    md = build_markdown(date, instructions, [line for _, line in written], definitions)
+    (folder / "report.md").write_text(md, encoding="utf-8")
+    return folder
+
+
+WEEKDAYS = "一二三四五六日"
+
+
+def date_heading(date: str) -> str:
+    d = datetime.strptime(date, "%Y-%m-%d")
+    return f"### {date}（週{WEEKDAYS[d.weekday()]}）"
+
+
+def build_range_markdown(start: str, end: str, instructions: str, entry_lines: list[tuple[str, str]],
+                         definitions: list[str] = ()) -> str:
+    """entry_lines：依時間排序的（日期, 紀錄那一行）。每天一個小標題，沒有紀錄的日子不列出。"""
+    days: dict[str, list[str]] = {}
+    for date, line in entry_lines:
+        days.setdefault(date, []).append(line)
+    if days:
+        records = "\n\n".join(date_heading(d) + "\n" + "\n".join(lines) for d, lines in days.items())
+    else:
+        records = "（這段期間沒有紀錄）"
+    return (
+        f"# 工作回報整理請求（{start} ~ {end}）\n\n"
+        f"## 指示\n{instructions.strip()}\n\n"
+        f"## 期間工作紀錄（共 {len(entry_lines)} 筆，{len(days)} 天）\n{records}\n"
+        + image_definitions(list(definitions))
+    )
+
+
+def range_folder(output_root, start: str, end: str) -> Path:
+    folder = Path(output_root) / f"report_{start}_to_{end}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def generate_range_report(db: Database, start: str, end: str, output_root, instructions: str,
+                          max_side: int = 1600) -> Path:
+    """整理 start～end（含頭尾）的所有紀錄，附圖編號跨日連續。"""
+    folder = range_folder(output_root, start, end)
+    written, definitions = _write_entries(db, db.entries_between(start, end), folder, max_side)
+    md = build_range_markdown(start, end, instructions, [(e.date, line) for e, line in written], definitions)
+    (folder / "report.md").write_text(md, encoding="utf-8")
     return folder

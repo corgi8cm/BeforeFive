@@ -6,24 +6,32 @@ from datetime import date
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
     QMainWindow, QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
     QVBoxLayout, QWidget,
 )
 
 from ..config import Settings, load_instructions
 from ..db import STATUS_LABELS, Database, Entry
-from ..report import generate_report
+from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import ManageDialog
+from .range_dialog import RangeDialog
 
 STATUS_ICONS = {"done": "✅", "doing": "🔄", "blocked": "⛔"}
 ALL, UNCATEGORIZED = "all", "none"
 NO_TAG_LABEL = "沒有 tag"
 UNCATEGORIZED_LABEL = "未分類"
 GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展開／收合狀態
+PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}
+CONTENT_COL = 5
+
+
+def by_priority(entries: list[Entry]) -> list[Entry]:
+    """優先順序高（數字小）的排前面，相同時維持原本的時間順序。"""
+    return sorted(entries, key=lambda e: e.priority)
 
 
 def group_by_tag(entries: list[Entry]) -> list[tuple[str | None, list[Entry]]]:
@@ -92,10 +100,11 @@ class MainWindow(QMainWindow):
         self.review_btn = button("📋 工作回顧", self.review, "產生 report_日期 資料夾並開啟")
         self.review_btn.setStyleSheet("font-weight:bold; padding:4px 12px;")
         top.addWidget(self.review_btn)
+        top.addWidget(button("📅 範圍整理", self.review_range, "選擇日期範圍，整理期間內的所有紀錄（例如週報）"))
         top.addWidget(button("📊 匯出 PPT", self.export_ppt, "一則紀錄一頁，存成 report_日期/report.pptx"))
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["時間", "狀態", "分類", "Tags", "內容", "圖片"])
+        self.tree.setHeaderLabels(["時間", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -108,9 +117,9 @@ class MainWindow(QMainWindow):
         self.tree.customContextMenuRequested.connect(self._context_menu)
         header = self.tree.header()
         header.setStretchLastSection(False)
-        for col in (0, 1, 2, 3, 5):
+        for col in (0, 1, 2, 3, 4, 6):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(CONTENT_COL, QHeaderView.Stretch)
 
         bottom = QHBoxLayout()
         bottom.addWidget(button("編輯", self.edit_selected))
@@ -174,11 +183,18 @@ class MainWindow(QMainWindow):
         n_img = len(e.images)
         n_ai = sum(i.include for i in e.images)
         img_text = f"{n_img}" + (f"（{n_ai} 給 AI）" if n_ai != n_img else "") if n_img else ""
-        item = QTreeWidgetItem([e.time, f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}", e.category,
-                                " ".join(f"#{t}" for t in e.tags), first_line, img_text])
-        item.setForeground(1, Qt.GlobalColor.white)
-        item.setBackground(1, QColor(STATUS_COLORS[e.status]))
-        item.setToolTip(4, self._tooltip(e))
+        item = QTreeWidgetItem([e.time, str(e.priority), f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}",
+                                e.category, " ".join(f"#{t}" for t in e.tags), first_line, img_text])
+        item.setTextAlignment(1, Qt.AlignCenter)
+        if e.priority in PRIORITY_COLORS:
+            item.setForeground(1, QColor(PRIORITY_COLORS[e.priority]))
+            font = QFont(item.font(1))
+            font.setBold(True)
+            item.setFont(1, font)
+        item.setToolTip(1, "優先順序：1 最優先，5 最不急")
+        item.setForeground(2, Qt.GlobalColor.white)
+        item.setBackground(2, QColor(STATUS_COLORS[e.status]))
+        item.setToolTip(CONTENT_COL, self._tooltip(e))
         item.setData(0, Qt.UserRole, e.id)
         return item
 
@@ -199,7 +215,7 @@ class MainWindow(QMainWindow):
     def _add_tag_groups(self, parent, entries: list[Entry], key_prefix: str):
         for tag, members in group_by_tag(entries):
             group = self._group_item(parent, f"#{tag}" if tag else NO_TAG_LABEL, len(members), (key_prefix, tag))
-            group.addChildren([self._entry_item(e) for e in members])
+            group.addChildren([self._entry_item(e) for e in by_priority(members)])
 
     def refresh(self):
         self.tree.clear()
@@ -207,7 +223,7 @@ class MainWindow(QMainWindow):
         grouped = self.group_box.isChecked()
         self.tree.setRootIsDecorated(grouped)
         if not grouped:
-            self.tree.addTopLevelItems([self._entry_item(e) for e in entries])
+            self.tree.addTopLevelItems([self._entry_item(e) for e in by_priority(entries)])
         elif self.category_filter.currentData() in (None, ALL):
             for category, members in group_by_category(entries, [n for _, n in self.db.categories()]):
                 group = self._group_item(None, f"【{category or UNCATEGORIZED_LABEL}】", len(members), category)
@@ -361,10 +377,29 @@ class MainWindow(QMainWindow):
         except Exception as e:  # 顯示給使用者，避免靜默失敗
             QMessageBox.critical(self, "產生失敗", str(e))
             return
+        self._report_done(folder)
+
+    def _report_done(self, folder):
         # 順便把 report.md 內容放進剪貼簿，到 AI 網頁直接貼上
         QApplication.clipboard().setText((folder / "report.md").read_text(encoding="utf-8"))
         self.statusBar().showMessage(f"已產生 {folder}，report.md 內容已複製到剪貼簿", 8000)
         os.startfile(folder)
+
+    def review_range(self):
+        dlg = RangeDialog(QDate.currentDate(), self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        start, end = dlg.range()
+        if not self.db.entries_between(start, end):
+            QMessageBox.information(self, "範圍整理", f"{start} ~ {end} 沒有任何紀錄。")
+            return
+        try:
+            folder = generate_range_report(self.db, start, end, self.settings.output_dir,
+                                           load_instructions(self.settings), self.settings.max_image_side)
+        except Exception as e:  # 顯示給使用者，避免靜默失敗
+            QMessageBox.critical(self, "產生失敗", str(e))
+            return
+        self._report_done(folder)
 
     def export_ppt(self):
         d = self.current_date
