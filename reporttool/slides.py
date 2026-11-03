@@ -175,6 +175,8 @@ def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page
     # 內容：有圖時文字放左邊、圖片放右邊
     text_w = (w - margin * 2) * (0.45 if shown else 1.0)
     lines = entry.text.strip().replace("\r\n", "\n").split("\n")
+    if entry.title:  # 有標題時標題當大字，內容全部列在下面
+        lines.insert(0, entry.title)
     _text(slide, margin, Inches(1.1), text_w, Inches(1.2), lines[0], 28, bold=True)
     body = [f"• {line.strip()}" for line in lines[1:] if line.strip()]
     body += [f"（{img.ref}）" for img in images if not img.available]

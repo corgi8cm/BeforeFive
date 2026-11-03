@@ -20,7 +20,7 @@ STATUSES = ("done", "doing", "blocked")
 STATUS_LABELS = {"done": "完成", "doing": "進行中", "blocked": "卡住"}
 UNFINISHED = ("doing", "blocked")
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -83,6 +83,14 @@ class Entry:
     category_id: int | None = None
     category: str = ""  # 分類名稱，讀取時填入
     uuid: str = ""  # 新增時自動產生
+    title: str = ""  # 可省略
+
+    @property
+    def summary(self) -> str:
+        """清單、提示中顯示的一行：有標題用標題，否則用內容第一行。"""
+        if self.title:
+            return self.title
+        return self.text.strip().splitlines()[0] if self.text.strip() else ""
 
 
 def normalize_tag(tag: str) -> str:
@@ -139,7 +147,7 @@ class Database:
     def _migrate(self):
         """依 PRAGMA user_version 逐步升級。每一步都會先檢查欄位，重複執行也安全。"""
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        steps = {1: self._migrate_v1, 2: self._migrate_v2}
+        steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3}
         for target in range(version + 1, SCHEMA_VERSION + 1):
             with self.conn:
                 steps[target]()
@@ -172,6 +180,11 @@ class Database:
 
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_uuid ON entries(uuid)")
         self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('device_id', ?)", (new_uuid(),))
+
+    def _migrate_v3(self):
+        """紀錄標題。"""
+        if "title" not in self._columns("entries"):
+            self.conn.execute("ALTER TABLE entries ADD COLUMN title TEXT NOT NULL DEFAULT ''")
 
     @property
     def device_id(self) -> str:
@@ -221,17 +234,18 @@ class Database:
             if entry.id is None:
                 entry.uuid = entry.uuid or new_uuid()
                 cur = self.conn.execute(
-                    "INSERT INTO entries (uuid, date, time, text, status, carried_from, category_id,"
-                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (entry.uuid, entry.date, entry.time, entry.text, entry.status, entry.carried_from,
+                    "INSERT INTO entries (uuid, date, time, title, text, status, carried_from, category_id,"
+                    " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.uuid, entry.date, entry.time, entry.title, entry.text, entry.status, entry.carried_from,
                      entry.category_id, now, now),
                 )
                 entry.id = cur.lastrowid
                 old_tags = set()
             else:
                 self.conn.execute(
-                    "UPDATE entries SET date=?, time=?, text=?, status=?, category_id=?, updated_at=? WHERE id=?",
-                    (entry.date, entry.time, entry.text, entry.status, entry.category_id, now, entry.id),
+                    "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, category_id=?, updated_at=?"
+                    " WHERE id=?",
+                    (entry.date, entry.time, entry.title, entry.text, entry.status, entry.category_id, now, entry.id),
                 )
                 old_tags = {r["tag"] for r in self.conn.execute(
                     "SELECT tag FROM entry_tags WHERE entry_id=?", (entry.id,))}
@@ -267,7 +281,7 @@ class Database:
         self.conn.execute("DELETE FROM images WHERE entry_id=?", (entry_id,))
         self.conn.execute("DELETE FROM entry_tags WHERE entry_id=?", (entry_id,))
         self.conn.execute(
-            "UPDATE entries SET text='', category_id=NULL, deleted_at=?, updated_at=? WHERE id=?",
+            "UPDATE entries SET title='', text='', category_id=NULL, deleted_at=?, updated_at=? WHERE id=?",
             (updated_at, updated_at, entry_id))
         return paths
 
@@ -284,7 +298,8 @@ class Database:
         category = self.conn.execute(
             "SELECT name FROM categories WHERE id=?", (row["category_id"],)).fetchone()
         return Entry(row["id"], row["date"], row["time"], row["text"], row["status"], tags, images,
-                     row["carried_from"], row["category_id"], category["name"] if category else "", row["uuid"])
+                     row["carried_from"], row["category_id"], category["name"] if category else "", row["uuid"],
+                     row["title"])
 
     def get_entry(self, entry_id: int) -> Entry | None:
         row = self.conn.execute(f"SELECT * FROM entries WHERE id=? AND {LIVE}", (entry_id,)).fetchone()
@@ -462,6 +477,7 @@ class Database:
         time = time or datetime.now().strftime("%H:%M")
         new_ids = []
         for old in self.carry_over_candidates(from_date, to_date):
-            new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id)
+            new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id,
+                        title=old.title)
             new_ids.append(self.save_entry(new))
         return new_ids

@@ -12,7 +12,7 @@ _GENERATED_FILE = re.compile(r"^\d{2,}_.+\.(png|jpg)$", re.IGNORECASE)
 
 
 def slugify(text: str, max_len: int = 20) -> str:
-    """取紀錄第一行當作檔名描述，移除空白與 Windows 檔名不允許的字元。"""
+    """取第一行當作檔名描述，移除空白與 Windows 檔名不允許的字元。"""
     first_line = text.strip().splitlines()[0] if text.strip() else ""
     slug = _INVALID_CHARS.sub("", first_line).strip(". ")
     return slug[:max_len] or "image"
@@ -48,6 +48,8 @@ def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = N
         head += "[" + " ".join(f"#{t}" for t in entry.tags) + "]"
     lines = entry.text.strip().replace("\r\n", "\n").split("\n")
     body = lines[0] + "".join(f"\n  {line}" for line in lines[1:])
+    if entry.title:
+        body = f"【{entry.title}】{body}"
     if since:
         body += f"（延續自 {since[5:]}）"
     if image_refs:
@@ -100,7 +102,7 @@ def number_images(db: Database, entries: list[Entry]) -> list[tuple[Entry, list[
         for img in entry.images:
             n += 1
             src = db.abs_path(img.path)
-            images.append(NumberedImage(n, src, f"{n:02d}_{slugify(entry.text)}{output_suffix(src)}", img.include))
+            images.append(NumberedImage(n, src, f"{n:02d}_{slugify(entry.title or entry.text)}{output_suffix(src)}", img.include))
         result.append((entry, images))
     return result
 

@@ -202,7 +202,10 @@ class EntryDialog(QDialog):
         self.setAcceptDrops(True)
         self.resize(600, 500)
 
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("標題（可省略）")
         self.text = PasteTextEdit()
+        self.title_edit.returnPressed.connect(self.text.setFocus)  # Enter 跳到內容
         self.text.setPlaceholderText("做了什麼？\nCtrl+V 可貼上截圖，也可以把圖片檔拖進來")
         self.text.images_received.connect(self.add_images)
         self.text.submit.connect(self.save)
@@ -270,6 +273,7 @@ class EntryDialog(QDialog):
         history = self._history_label()
         if history:
             layout.addWidget(history)
+        layout.addWidget(self.title_edit)
         self.text.setMinimumHeight(120)
         layout.addWidget(self.text, 1)
         layout.addLayout(status_row)
@@ -294,7 +298,7 @@ class EntryDialog(QDialog):
             return None
         if not chain:
             return None
-        lines = [f"{e.date[5:]} {e.time}　[{STATUS_LABELS[e.status]}]　{e.text.strip().splitlines()[0]}"
+        lines = [f"{e.date[5:]} {e.time}　[{STATUS_LABELS[e.status]}]　{e.summary}"
                  for e in chain[-5:]]
         label = QLabel("先前進度：\n" + "\n".join(lines))
         label.setWordWrap(True)
@@ -316,11 +320,14 @@ class EntryDialog(QDialog):
             if source:
                 self._set_category(source.category_id)
                 self.tag_edit.set_tags(source.tags)
+            if self.follow_up_of:  # 同一件工作沿用標題
+                self.title_edit.setText(self.follow_up_of.title)
             return
         for btn in self.status_group.buttons():
             btn.setChecked(btn.property("status") == entry.status)
         self._set_category(entry.category_id)
         self.time_edit.setTime(QTime.fromString(entry.time, "HH:mm"))
+        self.title_edit.setText(entry.title)
         self.text.setPlainText(entry.text)
         self.text.moveCursor(self.text.textCursor().MoveOperation.End)
         self.tag_edit.set_tags(entry.tags)
@@ -353,9 +360,10 @@ class EntryDialog(QDialog):
     # ---- 儲存 ----
 
     def save(self):
+        title = self.title_edit.text().strip()
         text = self.text.toPlainText().strip()
-        if not text:
-            QMessageBox.warning(self, "還沒寫內容", "請輸入這筆紀錄的內容。")
+        if not text and not title:
+            QMessageBox.warning(self, "還沒寫內容", "請輸入這筆紀錄的標題或內容。")
             self.text.setFocus()
             return
         images = []
@@ -375,6 +383,7 @@ class EntryDialog(QDialog):
                                     carried_from=self.follow_up_of.id if self.follow_up_of else None)
         entry.category_id = self.category_box.currentData()
         entry.time = self.time_edit.time().toString("HH:mm")
+        entry.title = title
         entry.text = text
         entry.status = self.status_group.checkedButton().property("status")
         entry.tags = self.tag_edit.tags()

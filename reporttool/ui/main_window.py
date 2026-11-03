@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
         return entry.category_id == selected
 
     def _entry_item(self, e: Entry) -> QTreeWidgetItem:
-        first_line = e.text.strip().splitlines()[0] if e.text.strip() else ""
+        first_line = e.summary
         if e.carried_from:
             first_line = "↪ " + first_line
         n_img = len(e.images)
@@ -232,11 +232,12 @@ class MainWindow(QMainWindow):
             "　".join(f"{STATUS_LABELS[s]} {counts[s]}" for s in STATUS_LABELS))
 
     def _tooltip(self, entry) -> str:
+        text = f"【{entry.title}】\n{entry.text}" if entry.title else entry.text
         history = self.db.history(entry.id)
         if not history:
-            return entry.text
-        lines = [f"{e.date[5:]} [{STATUS_LABELS[e.status]}] {e.text.strip().splitlines()[0]}" for e in history[-5:]]
-        return entry.text + "\n\n先前進度：\n" + "\n".join(lines)
+            return text
+        lines = [f"{e.date[5:]} [{STATUS_LABELS[e.status]}] {e.summary}" for e in history[-5:]]
+        return text + "\n\n先前進度：\n" + "\n".join(lines)
 
     @staticmethod
     def _entry_id(item):
@@ -325,7 +326,7 @@ class MainWindow(QMainWindow):
         if entry_id is None:
             return
         entry = self.db.get_entry(entry_id)
-        if QMessageBox.question(self, "刪除紀錄", f"確定刪除這筆紀錄？\n\n[{entry.time}] {entry.text[:60]}") \
+        if QMessageBox.question(self, "刪除紀錄", f"確定刪除這筆紀錄？\n\n[{entry.time}] {entry.summary[:60]}") \
                 == QMessageBox.Yes:
             self.db.delete_entry(entry_id)
             self.refresh()
@@ -342,7 +343,7 @@ class MainWindow(QMainWindow):
         if not candidates:
             QMessageBox.information(self, "帶入未完成項目", f"{source} 沒有尚未帶入的「進行中／卡住」項目。")
             return
-        lines = "\n".join(f"・[{STATUS_LABELS[e.status]}] {e.text.strip().splitlines()[0][:40]}" for e in candidates)
+        lines = "\n".join(f"・[{STATUS_LABELS[e.status]}] {e.summary[:40]}" for e in candidates)
         if QMessageBox.question(self, "帶入未完成項目",
                                 f"將 {source} 的 {len(candidates)} 筆項目帶入 {target}：\n\n{lines}") \
                 == QMessageBox.Yes:
