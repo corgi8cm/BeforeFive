@@ -20,7 +20,7 @@ def test_order_by_tag():
     def e(text, status, tags):
         return Entry(None, DATE, "00:00", text, status, tags), []
 
-    items = [e("a", "blocked", ["A"]), e("b", "done", []), e("c", "done", ["B"]), e("d", "done", ["A", "B"])]
+    items = [e("a", "waiting", ["A"]), e("b", "done", []), e("c", "done", ["B"]), e("d", "done", ["A", "B"])]
     assert [it[0].text for it in order_by_tag(items)] == ["d", "a", "c", "b"]
 
 
@@ -32,7 +32,7 @@ def test_export_slides(tmp_path):
     hidden.include = False
 
     db.save_entry(Entry(None, DATE, "10:20", "修登入頁 timeout 問題\n已找到原因", "doing", ["專案A"], [shown, hidden]))
-    db.save_entry(Entry(None, DATE, "11:00", "等待 DBA 開權限", "blocked", ["專案B"]))
+    db.save_entry(Entry(None, DATE, "11:00", "等待 DBA 開權限", "waiting", ["專案B"]))
     db.save_entry(Entry(None, DATE, "14:05", "timeout 修好，已送 PR", "done", ["專案A"]))
 
     path = export_slides(db, DATE, tmp_path / "out")

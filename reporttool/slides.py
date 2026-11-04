@@ -15,14 +15,13 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
-from .db import STATUS_LABELS, Database, Entry
+from .db import REPORT_ORDER, STATUS_ICONS, STATUS_LABELS, Database, Entry
 from .report import NumberedImage, continued_since, format_entry_line, number_images, report_folder
 
 FONT = "Microsoft JhengHei"
-STATUS_RGB = {"done": RGBColor(0x2E, 0x9D, 0x5B), "doing": RGBColor(0x2F, 0x6F, 0xD6),
-              "blocked": RGBColor(0xD6, 0x45, 0x45)}
-STATUS_ICONS = {"done": "✅", "doing": "🔄", "blocked": "⛔"}
-STATUS_ORDER = {"done": 0, "doing": 1, "blocked": 2}
+STATUS_RGB = {"todo": RGBColor(0x6B, 0x75, 0x80), "doing": RGBColor(0x2F, 0x6F, 0xD6),
+              "waiting": RGBColor(0xE0, 0x8A, 0x00), "review": RGBColor(0x8A, 0x4F, 0xD1),
+              "done": RGBColor(0x2E, 0x9D, 0x5B), "cancelled": RGBColor(0xA0, 0xA0, 0xA0)}
 DARK = RGBColor(0x22, 0x22, 0x22)
 MUTED = RGBColor(0x80, 0x80, 0x80)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
@@ -31,13 +30,13 @@ PRIORITY_RGB = {1: RGBColor(0xD6, 0x45, 0x45), 2: RGBColor(0xE0, 0x8A, 0x00)}
 
 
 def order_by_tag(items: list[tuple[Entry, list]]) -> list[tuple[Entry, list]]:
-    """依第一個 tag 分組（照第一次出現的順序），組內依 優先順序→完成／進行中／卡住→時間；沒有 tag 的放最後。"""
+    """依第一個 tag 分組（照第一次出現的順序），組內依 優先順序→狀態（完成在前、取消在後）→時間；沒有 tag 的放最後。"""
     groups: dict[str | None, list] = {}
     for item in items:
         tags = item[0].tags
         groups.setdefault(tags[0] if tags else None, []).append(item)
     keys = [k for k in groups if k is not None] + ([None] if None in groups else [])
-    return [item for k in keys for item in sorted(groups[k], key=lambda it: (it[0].priority, STATUS_ORDER[it[0].status]))]
+    return [item for k in keys for item in sorted(groups[k], key=lambda it: (it[0].priority, REPORT_ORDER[it[0].status]))]
 
 
 def order_by_category(items: list[tuple[Entry, list]], category_order: list[str]) -> list[tuple[Entry, list]]:
@@ -137,8 +136,10 @@ def _cover(prs, date: str, entries: list[Entry]):
     _text(slide, Inches(0.8), Inches(3.1), w - Inches(1.6), Inches(0.6), date, 24, color=MUTED)
 
     left = Inches(0.8)
-    for status in ("done", "doing", "blocked"):
+    for status in sorted(STATUS_LABELS, key=REPORT_ORDER.get):
         count = sum(e.status == status for e in entries)
+        if not count:
+            continue
         left += _chip(slide, left, Inches(4.1), f"{STATUS_LABELS[status]} {count}", STATUS_RGB[status]) + Inches(0.2)
 
     tags = []

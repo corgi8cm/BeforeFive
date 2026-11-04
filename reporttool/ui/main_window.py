@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Settings, load_instructions
-from ..db import STATUS_LABELS, Database, Entry
+from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
@@ -20,7 +20,6 @@ from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import ManageDialog
 from .range_dialog import RangeDialog
 
-STATUS_ICONS = {"done": "✅", "doing": "🔄", "blocked": "⛔"}
 ALL, UNCATEGORIZED = "all", "none"
 NO_TAG_LABEL = "沒有 tag"
 UNCATEGORIZED_LABEL = "未分類"
@@ -96,7 +95,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.group_box)
         top.addStretch()
         top.addWidget(button("＋ 新增紀錄", self.new_entry, f"全域快捷鍵：{settings.hotkey}"))
-        top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中「進行中／卡住」的項目帶進這一天"))
+        top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中未完成（不是完成或取消）的項目帶進這一天"))
         self.review_btn = button("📋 工作回顧", self.review, "產生 report_日期 資料夾並開啟")
         self.review_btn.setStyleSheet("font-weight:bold; padding:4px 12px;")
         top.addWidget(self.review_btn)
@@ -194,6 +193,11 @@ class MainWindow(QMainWindow):
         item.setToolTip(1, "優先順序：1 最優先，5 最不急")
         item.setForeground(2, Qt.GlobalColor.white)
         item.setBackground(2, QColor(STATUS_COLORS[e.status]))
+        if e.status == "cancelled":
+            font = QFont(item.font(CONTENT_COL))
+            font.setStrikeOut(True)
+            item.setFont(CONTENT_COL, font)
+            item.setForeground(CONTENT_COL, QColor(STATUS_COLORS["cancelled"]))
         item.setToolTip(CONTENT_COL, self._tooltip(e))
         item.setData(0, Qt.UserRole, e.id)
         return item
@@ -245,7 +249,7 @@ class MainWindow(QMainWindow):
         scope = "" if self.category_filter.currentData() in (None, ALL) else f"［{self.category_filter.currentText()}］"
         self.statusBar().showMessage(
             f"{self.current_date}{scope}：共 {len(entries)} 筆　" +
-            "　".join(f"{STATUS_LABELS[s]} {counts[s]}" for s in STATUS_LABELS))
+            "　".join(f"{STATUS_LABELS[s]} {counts[s]}" for s in STATUS_LABELS if counts[s]))
 
     def _tooltip(self, entry) -> str:
         text = f"【{entry.title}】\n{entry.text}" if entry.title else entry.text
@@ -357,7 +361,7 @@ class MainWindow(QMainWindow):
             return
         candidates = self.db.carry_over_candidates(source, target)
         if not candidates:
-            QMessageBox.information(self, "帶入未完成項目", f"{source} 沒有尚未帶入的「進行中／卡住」項目。")
+            QMessageBox.information(self, "帶入未完成項目", f"{source} 沒有尚未帶入的未完成項目。")
             return
         lines = "\n".join(f"・[{STATUS_LABELS[e.status]}] {e.summary[:40]}" for e in candidates)
         if QMessageBox.question(self, "帶入未完成項目",

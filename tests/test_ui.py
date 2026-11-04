@@ -42,11 +42,11 @@ def test_paste_screenshot_and_drop_file(qapp, tmp_path):
     dlg.strip.items[1].include_box.setChecked(False)
     dlg.text.setPlainText("修登入頁")
     dlg.tag_edit.setText("#專案A #bug")
-    dlg.status_group.buttons()[2].click()  # 卡住
+    dlg.status_group.buttons()[2].click()  # 等待中
     dlg.save()
 
     saved = [e for e in db.entries_for_date(DATE) if e.text == "修登入頁"][0]
-    assert saved.status == "blocked" and saved.tags == ["專案A", "bug"]
+    assert saved.status == "waiting" and saved.tags == ["專案A", "bug"]
     assert [i.include for i in saved.images] == [True, False]
     assert all(db.abs_path(i.path).exists() for i in saved.images)
 
@@ -81,10 +81,10 @@ def test_new_entry_defaults_to_last_category_and_tags(qapp, tmp_path):
 def test_follow_up_links_to_previous(qapp, tmp_path):
     db = Database(tmp_path)
     cid = db.categories()[0][0]
-    old_id = db.save_entry(Entry(None, "2026-11-01", "09:00", "修登入頁", "blocked", ["專案A"], category_id=cid))
+    old_id = db.save_entry(Entry(None, "2026-11-01", "09:00", "修登入頁", "waiting", ["專案A"], category_id=cid))
     dlg = EntryDialog(db, DATE, follow_up_of=db.get_entry(old_id))
     assert dlg.windowTitle().startswith("追加進度")
-    assert dlg.status_group.checkedButton().property("status") == "blocked"
+    assert dlg.status_group.checkedButton().property("status") == "waiting"
     assert dlg.text.toPlainText() == ""
     dlg.text.setPlainText("DBA 已開權限")
     dlg.status_group.buttons()[0].click()

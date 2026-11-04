@@ -12,7 +12,7 @@ import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from .db import DEFAULT_PRIORITY, LIVE, PRIORITIES, STATUSES, Database, utc_now
+from .db import DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, utc_now
 
 FORMAT = "reporttool-bundle"
 FORMAT_VERSION = 1
@@ -106,7 +106,7 @@ def validate(data: dict):
         _require(isinstance(name, str) and name, "紀錄缺少 uuid")
         _require(_DATE.match(e.get("date") or ""), f"紀錄 {name} 的日期格式錯誤")
         _require(_CLOCK.match(e.get("time") or ""), f"紀錄 {name} 的時間格式錯誤")
-        _require(e.get("status") in STATUSES, f"紀錄 {name} 的狀態不正確")
+        _require(e.get("status") in STATUSES or e.get("status") in LEGACY_STATUSES, f"紀錄 {name} 的狀態不正確")
         _require(isinstance(e.get("text"), str), f"紀錄 {name} 缺少內容")
         _require(isinstance(e.get("title", ""), str), f"紀錄 {name} 的標題格式錯誤")
         _require(e.get("priority", DEFAULT_PRIORITY) in PRIORITIES and not isinstance(e.get("priority"), bool),
@@ -163,7 +163,8 @@ def _merge_category(db: Database, c: dict, stats: dict):
 
 def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list):
     # 舊資料包沒有這些欄位：當作沒有標題、預設優先順序
-    e = {**e, "title": e.get("title", ""), "priority": e.get("priority", DEFAULT_PRIORITY)}
+    e = {**e, "title": e.get("title", ""), "priority": e.get("priority", DEFAULT_PRIORITY),
+         "status": LEGACY_STATUSES.get(e["status"], e["status"])}
     row = db.conn.execute("SELECT * FROM entries WHERE uuid=?", (e["uuid"],)).fetchone()
     if row and not _incoming_wins(_entry_record(db, row), e):
         return

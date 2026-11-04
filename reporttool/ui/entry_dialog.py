@@ -10,10 +10,11 @@ from PySide6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ..db import DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, Database, Entry, Image, parse_tags
+from ..db import DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_tags
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
-STATUS_COLORS = {"done": "#2e9d5b", "doing": "#2f6fd6", "blocked": "#d64545"}
+STATUS_COLORS = {"todo": "#6b7580", "doing": "#2f6fd6", "waiting": "#e08a00", "review": "#8a4fd1",
+                 "done": "#2e9d5b", "cancelled": "#a0a0a0"}
 
 
 def extract_images(mime) -> list:
@@ -213,8 +214,9 @@ class EntryDialog(QDialog):
         # 狀態 + 時間
         self.status_group = QButtonGroup(self)
         status_row = QHBoxLayout()
-        for i, key in enumerate(("done", "doing", "blocked"), start=1):
-            btn = QPushButton(f"{STATUS_LABELS[key]} (Alt+{i})")
+        for i, key in enumerate(STATUSES, start=1):
+            btn = QPushButton(STATUS_LABELS[key])
+            btn.setToolTip(f"Alt+{i}")
             btn.setCheckable(True)
             btn.setAutoDefault(False)
             btn.setStyleSheet(

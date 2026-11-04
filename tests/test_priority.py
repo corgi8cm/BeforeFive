@@ -110,5 +110,5 @@ def test_slides_order_by_priority_first():
     def e(text, status, priority):
         return Entry(None, DATE, "00:00", text, status, ["A"], priority=priority), []
 
-    items = [e("a", "done", 3), e("b", "blocked", 1), e("c", "done", 2)]
+    items = [e("a", "done", 3), e("b", "waiting", 1), e("c", "done", 2)]
     assert [it[0].text for it in order_by_tag(items)] == ["b", "c", "a"]

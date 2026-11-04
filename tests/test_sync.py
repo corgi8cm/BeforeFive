@@ -90,7 +90,7 @@ def test_two_devices_converge(tmp_path):
     b_id = b.entries_for_date(DATE)[0].id
 
     # A 改狀態，B 稍後改內容：B 比較新，B 的版本勝出
-    a.set_status(shared, "blocked")
+    a.set_status(shared, "waiting")
     entry = b.get_entry(b_id)
     entry.text = "B 改過的"
     b.save_entry(entry)

@@ -61,13 +61,13 @@ def test_carry_over(tmp_path):
     img = db.import_image_file(make_png(tmp_path / "a.png"), "2026-10-30")
     db.save_entry(Entry(None, "2026-10-30", "10:00", "完成的", "done"))
     doing = db.save_entry(Entry(None, "2026-10-30", "11:00", "進行中的", "doing", ["專案A"], [img]))
-    db.save_entry(Entry(None, "2026-10-30", "12:00", "卡住的", "blocked"))
+    db.save_entry(Entry(None, "2026-10-30", "12:00", "等待中的", "waiting"))
 
     # 週一帶入週五的項目
     assert db.previous_date_with_entries("2026-11-02") == "2026-10-30"
     new_ids = db.carry_over("2026-10-30", "2026-11-02", time="09:00")
     today = db.entries_for_date("2026-11-02")
-    assert [e.text for e in today] == ["進行中的", "卡住的"]
+    assert [e.text for e in today] == ["進行中的", "等待中的"]
     assert today[0].tags == ["專案A"] and today[0].images == [] and today[0].carried_from == doing
     assert len(new_ids) == 2
 

@@ -16,13 +16,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-STATUSES = ("done", "doing", "blocked")
-STATUS_LABELS = {"done": "完成", "doing": "進行中", "blocked": "卡住"}
-UNFINISHED = ("doing", "blocked")
+# 依工作流程排列：輸入視窗的按鈕、Alt+1~6、右鍵選單、狀態列都用這個順序
+STATUSES = ("todo", "doing", "waiting", "review", "done", "cancelled")
+STATUS_LABELS = {"todo": "待辦", "doing": "進行中", "waiting": "等待中", "review": "待確認", "done": "完成",
+                 "cancelled": "取消"}
+STATUS_ICONS = {"todo": "📝", "doing": "🔄", "waiting": "⏳", "review": "👀", "done": "✅", "cancelled": "🚫"}
+# 回報、投影片內的排序：先講成果，取消的放最後
+REPORT_ORDER = {s: i for i, s in enumerate(("done", "review", "doing", "waiting", "todo", "cancelled"))}
+UNFINISHED = ("todo", "doing", "waiting", "review")
+LEGACY_STATUSES = {"blocked": "todo"}  # 舊版的「卡住」改成「待辦」
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
 DEFAULT_PRIORITY = 3
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -151,7 +157,7 @@ class Database:
         """依 PRAGMA user_version 逐步升級。每一步都會先檢查欄位，重複執行也安全。"""
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
-                 4: self._migrate_v4}
+                 4: self._migrate_v4, 5: self._migrate_v5}
         for target in range(version + 1, SCHEMA_VERSION + 1):
             with self.conn:
                 steps[target]()
@@ -194,6 +200,11 @@ class Database:
         """執行優先順序（1~5，1 最優先）。"""
         if "priority" not in self._columns("entries"):
             self.conn.execute(f"ALTER TABLE entries ADD COLUMN priority INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}")
+
+    def _migrate_v5(self):
+        """狀態改版：「卡住」改成「待辦」。不更新 updated_at，每台裝置升級後結果相同，不會被當成新的修改。"""
+        for old, new in LEGACY_STATUSES.items():
+            self.conn.execute("UPDATE entries SET status=? WHERE status=?", (new, old))
 
     @property
     def device_id(self) -> str:
@@ -472,9 +483,10 @@ class Database:
         return row["d"]
 
     def carry_over_candidates(self, from_date: str, to_date: str) -> list[Entry]:
-        """from_date 中「進行中／卡住」且尚未帶入 to_date 的紀錄。"""
+        """from_date 中未完成（不是完成或取消）且尚未帶入 to_date 的紀錄。"""
+        marks = ", ".join("?" * len(UNFINISHED))
         rows = self.conn.execute(
-            "SELECT * FROM entries e WHERE e.date=? AND e.status IN (?, ?) AND e.deleted_at IS NULL"
+            f"SELECT * FROM entries e WHERE e.date=? AND e.status IN ({marks}) AND e.deleted_at IS NULL"
             " AND NOT EXISTS (SELECT 1 FROM entries c WHERE c.date=? AND c.carried_from=e.id"
             " AND c.deleted_at IS NULL)"
             " ORDER BY e.time, e.id",

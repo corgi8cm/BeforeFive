@@ -85,7 +85,7 @@
    "time": "14:05",
    "title": "",
    "text": "協助客戶排查登入問題",
-   "status": "blocked",
+   "status": "waiting",
    "priority": 1,
    "category": "支援",
    "tags": ["客戶X", "登入"],

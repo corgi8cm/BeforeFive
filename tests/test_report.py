@@ -28,7 +28,7 @@ def test_generate_report(tmp_path):
 
     db.save_entry(Entry(None, DATE, "14:05", "timeout 修好，已送 PR", "done", ["專案A"], [small, hidden]))
     db.save_entry(Entry(None, DATE, "10:20", "修登入頁 timeout 問題", "doing", ["專案A"], [big]))
-    db.save_entry(Entry(None, DATE, "16:00", "等待 DBA 開權限\n已經寄信催了", "blocked", []))
+    db.save_entry(Entry(None, DATE, "16:00", "等待 DBA 開權限\n已經寄信催了", "waiting", []))
 
     folder = generate_report(db, DATE, tmp_path / "out", DEFAULT_INSTRUCTIONS)
     assert folder.name == f"report_{DATE}"
@@ -46,7 +46,7 @@ def test_generate_report(tmp_path):
     assert "- [10:20][進行中][優先3][#專案A] 修登入頁 timeout 問題（![附圖1]）" in md
     assert "- [14:05][完成][優先3][#專案A] timeout 修好，已送 PR（![附圖2]、附圖3：未提供）" in md
     assert md.endswith("\n\n[附圖1]: <01_修登入頁timeout問題.png>\n[附圖2]: <02_timeout修好，已送PR.jpg>\n")
-    assert "- [16:00][卡住][優先3] 等待 DBA 開權限\n  已經寄信催了" in md
+    assert "- [16:00][等待中][優先3] 等待 DBA 開權限\n  已經寄信催了" in md
 
 
 def test_regenerate_removes_old_images_only(tmp_path):
