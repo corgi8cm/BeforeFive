@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..changes import changes_for
 from ..config import Settings, load_instructions
 from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
+from .changes_dialog import ChangesDialog
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import ManageDialog
 from .range_dialog import RangeDialog
@@ -382,6 +384,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "產生失敗", str(e))
             return
         self._report_done(folder)
+        self.show_changes(d)
+
+    def show_changes(self, date: str):
+        """有延續的工作時，跳出和前一次紀錄的比較。"""
+        changes = changes_for(self.db, self.db.entries_for_date(date))
+        if not changes:
+            return
+        self.changes_dialog = ChangesDialog(changes, self)
+        self.changes_dialog.show()
+        self.changes_dialog.raise_()
+        self.changes_dialog.activateWindow()
 
     def _report_done(self, folder):
         # 順便把 report.md 內容放進剪貼簿，到 AI 網頁直接貼上

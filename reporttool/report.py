@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image as PILImage, ImageOps
 
+from .changes import EntryChange, change_for, format_change_lines
 from .db import STATUS_LABELS, Database, Entry
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]+')
@@ -41,7 +42,8 @@ def continued_since(db: Database, entry: Entry) -> str | None:
     return history[0].date if history else None
 
 
-def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None) -> str:
+def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None,
+                      change: EntryChange | None = None) -> str:
     head = f"[{entry.time}][{STATUS_LABELS[entry.status]}][優先{entry.priority}]"
     if entry.category:
         head += f"[分類：{entry.category}]"
@@ -55,6 +57,8 @@ def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = N
         body += f"（延續自 {since[5:]}）"
     if image_refs:
         body += "（" + "、".join(image_refs) + "）"
+    if change:
+        body += format_change_lines(change)
     return f"- {head} {body}"
 
 
@@ -139,7 +143,8 @@ def _write_entries(db: Database, entries: list[Entry], folder: Path,
             if img.available:
                 resize_image(img.src, folder / img.filename, max_side)
                 definitions.append(img.definition)
-        lines.append((entry, format_entry_line(entry, [img.md_ref for img in images], continued_since(db, entry))))
+        lines.append((entry, format_entry_line(entry, [img.md_ref for img in images], continued_since(db, entry),
+                                               change_for(db, entry))))
     return lines, definitions
 
 

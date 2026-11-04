@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import sqlite3
 import zipfile
 
@@ -91,6 +92,7 @@ def test_two_devices_converge(tmp_path):
 
     # A 改狀態，B 稍後改內容：B 比較新，B 的版本勝出
     a.set_status(shared, "waiting")
+    time.sleep(0.005)  # updated_at 只到毫秒，確保 B 的修改確實比較晚
     entry = b.get_entry(b_id)
     entry.text = "B 改過的"
     b.save_entry(entry)

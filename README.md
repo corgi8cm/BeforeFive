@@ -46,6 +46,7 @@
 | 圖片不給 AI | 取消圖片下方的「給 AI」勾選 |
 | 帶入未完成項目 | 主視窗按「帶入未完成項目」：把上一個有紀錄的日子（週一會帶入週五）中未完成（完成、取消以外）的項目複製到今天；不帶圖片，重複按也不會重複帶入 |
 | 工作回顧 | 主視窗按「📋 工作回顧」。report.md 的內容會同時複製到剪貼簿，可以直接貼到 AI 網頁 |
+| 延續項目的變更 | 帶入或追加進度的工作，report.md 會多一行「⇄ 與 MM-DD 相比：…」，列出狀態、優先、標題、分類、tag 的變化與改動的內容（前：／後：），沒改就寫「沒有變更」。按「📋 工作回顧」時若當天有延續的工作，會跳出比較視窗，左右並排顯示前後內容，刪除的字紅底、新增的字綠底 |
 | 範圍整理（週報、月報） | 主視窗按「📅 範圍整理」，選開始與結束日期（或按 本週／上週／本月／上個月），產生 `report_開始_to_結束/`：report.md 依日期分段，附圖編號跨日連續，內容一樣會複製到剪貼簿。指示沿用 `instructions.md` |
 | 匯出 PPT | 主視窗按「📊 匯出 PPT」，產生 `report_日期/report.pptx` |
 
@@ -121,10 +122,12 @@ reporttool/
   db.py                     SQLite 資料層（含版本升級）
   sync.py                   備份匯出／匯入與合併規則（之後手機同步共用）
   report.py                 工作回顧與範圍整理（資料夾、縮圖、report.md）
+  changes.py                延續的工作和前一次紀錄的比較
   slides.py                 匯出 PPT
   hotkey.py                 Windows RegisterHotKey
   ui/main_window.py         主視窗
   ui/entry_dialog.py        新增／編輯／追加進度視窗
+  ui/changes_dialog.py      延續項目的前後比較視窗
   ui/manage_dialog.py       管理分類與標籤
   ui/range_dialog.py        選擇日期範圍（範圍整理）
 tests/

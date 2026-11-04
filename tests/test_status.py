@@ -89,3 +89,15 @@ def test_cancelled_is_struck_out_and_status_bar_hides_zero(qapp, tmp_path):
     assert not items["做完了"].font(CONTENT_COL).strikeOut()
     message = win.statusBar().currentMessage()
     assert "取消 1" in message and "完成 1" in message and "待辦" not in message
+
+
+def test_old_instructions_are_upgraded(tmp_path):
+    from reporttool.config import DEFAULT_INSTRUCTIONS, OLD_STATUS_LINES, load_instructions
+
+    old = DEFAULT_INSTRUCTIONS.replace(DEFAULT_INSTRUCTIONS.splitlines()[2], OLD_STATUS_LINES[0])
+    old = old.replace(DEFAULT_INSTRUCTIONS.splitlines()[4] + "\n", "")
+    custom = "- 我自己加的規則\n" + old
+    (tmp_path / "instructions.md").write_text(custom, encoding="utf-8")
+    text = load_instructions(load_settings(tmp_path))
+    assert text == "- 我自己加的規則\n" + DEFAULT_INSTRUCTIONS
+    assert load_instructions(load_settings(tmp_path)) == text  # 再開一次不會重複加

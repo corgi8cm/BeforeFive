@@ -21,10 +21,25 @@ DEFAULT_INSTRUCTIONS = """\
 - 每個分類內再依 tag 分組，用 tag 當小標題（例如 *#專案A*），相同 tag 的項目放在同一組；一筆有多個 tag 時以第一個為準，沒有 tag 的放在該分類最後
 - 每組內用條列，依「✅ 完成」「👀 待確認」「🔄 進行中」「⏳ 等待中」「📝 待辦」「🚫 取消」的順序排列，每項開頭標上對應的狀態符號
 - 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
+- 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
 - 只用紀錄和圖片中的內容，不要補充或編造
 - 參考圖片內容讓描述更具體，但保留（附圖N）標記
 - 用 Slack mrkdwn 格式，語氣簡潔、專業
 """
+
+_LINES = DEFAULT_INSTRUCTIONS.splitlines()
+STATUS_LINE, CONTINUED_LINE, CHANGES_LINE = _LINES[2], _LINES[3], _LINES[4]
+# 舊版預設的狀態那一行：instructions.md 只在第一次執行時建立，程式更新後要自動換成新版
+OLD_STATUS_LINES = ("- 每組內用條列，依「✅ 完成」「🔄 進行中」「⛔ 卡住」的順序排列，每項開頭標上對應的狀態符號",)
+
+
+def upgrade_instructions(text: str) -> str:
+    """只改舊版預設的那幾行，使用者自己寫的內容不動。"""
+    lines = text.splitlines()
+    lines = [STATUS_LINE if line.strip() in OLD_STATUS_LINES else line for line in lines]
+    if "⇄" not in text and CONTINUED_LINE in lines:
+        lines.insert(lines.index(CONTINUED_LINE) + 1, CHANGES_LINE)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
 @dataclass
@@ -60,6 +75,10 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
     instructions = config_dir / "instructions.md"
     if not instructions.exists():
         instructions.write_text(DEFAULT_INSTRUCTIONS, encoding="utf-8")
+    else:
+        text = instructions.read_text(encoding="utf-8")
+        if upgrade_instructions(text) != text:
+            instructions.write_text(upgrade_instructions(text), encoding="utf-8")
 
     return Settings(
         hotkey=raw["hotkey"],
