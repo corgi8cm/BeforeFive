@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .. import __version__
 from ..changes import changes_for
 from ..config import Settings, load_instructions
 from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
@@ -67,7 +68,7 @@ class MainWindow(QMainWindow):
         self.db = db
         self.settings = settings
         self._quick_dialog = None
-        self.setWindowTitle("工作回報工具")
+        self.setWindowTitle(f"工作回報工具 v{__version__}")
         self.resize(820, 520)
 
         self.date_edit = QDateEdit(QDate.currentDate())

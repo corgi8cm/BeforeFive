@@ -4,6 +4,8 @@
 
 所有資料只存在本機，不呼叫任何外部 API。
 
+目前版本：**1.0.0**（主視窗標題列會顯示版本，更新內容見 [CHANGELOG.md](CHANGELOG.md)）。
+
 ## 安裝與啟動（Windows）
 
 1. 安裝 Python 3.10 以上
@@ -77,6 +79,8 @@ ReportTool\WorkReports\report_2026-11-02\
 
 都在 `config/` 資料夾（主視窗有「開啟設定資料夾」「編輯 AI 指示」按鈕）：
 
+`config/` 不進版控：第一次執行時會用程式內建的預設值建立，之後的修改（例如 AI 指示中寫到的公司或客戶資訊）只留在本機，不會被 commit。
+
 - `instructions.md`：report.md 中「## 指示」的內容。每次產生時重新讀取，改完不用重開程式
 - `settings.json`：
   - `hotkey`：全域快捷鍵，例如 `"Ctrl+Alt+R"`、`"Ctrl+Shift+Space"`、`"Win+F9"`
@@ -112,10 +116,13 @@ ReportTool\WorkReports\report_2026-11-02\
 %LOCALAPPDATA%\ReportTool\venv\Scripts\python.exe -m pytest
 ```
 
+發布新版本時：修改 `reporttool/__init__.py` 的 `__version__`、在 `CHANGELOG.md` 加上這一版的內容，commit 後打上 `vX.Y.Z` 的 git tag。
+
 ```
 main.py                     進入點
 build.bat                   打包成 dist\ReportTool.exe
 tools/make_ico.py           產生 exe 圖示
+tools/make_version_file.py  產生 exe 的版本資訊（檔案內容 → 詳細資料）
 reporttool/
   app.py                    全域快捷鍵、單一實例
   config.py                 讀 config/
@@ -139,3 +146,9 @@ docs/
 
 之後要加的功能：
 - 下班前提醒：在 `app.py` 加一個 `QTimer`，時間到時跳出提醒視窗（程式要開著才會提醒）
+
+## 授權
+
+MIT License，見 [LICENSE](LICENSE)。
+
+使用的第三方套件：[PySide6](https://doc.qt.io/qtforpython-6/)（LGPLv3）、[Pillow](https://python-pillow.org/)（MIT-CMU）、[python-pptx](https://github.com/scanny/python-pptx)（MIT）。`build.bat` 產生的 exe 內含 PySide6／Qt 的程式庫，散布 exe 時需遵守 LGPLv3。

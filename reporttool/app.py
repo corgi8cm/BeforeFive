@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from . import __version__
 from .config import load_settings
 from .db import Database
 from .hotkey import GlobalHotkey
@@ -36,6 +37,7 @@ def make_icon() -> QIcon:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("ReportTool")
+    app.setApplicationVersion(__version__)
 
     # 已經在執行就叫出現有視窗
     server_name = f"ReportTool-{getpass.getuser()}"

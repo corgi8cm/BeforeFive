@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .pytest_cache/
 # 個人資料不進版控（預設就不在 repo 內，這裡是保險）
+config/
 *.db
 report_*/
 WorkReports/

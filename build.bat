@@ -10,8 +10,9 @@ if not exist "%VENV%\Scripts\python.exe" (
 "%VENV%\Scripts\python.exe" -m pip install "pyinstaller>=6"
 if not exist "%WORK%" mkdir "%WORK%"
 "%VENV%\Scripts\python.exe" "%~dp0tools\make_ico.py" "%WORK%\icon.ico" || goto :fail
+"%VENV%\Scripts\python.exe" "%~dp0tools\make_version_file.py" "%WORK%\version.txt" || goto :fail
 "%VENV%\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed ^
-    --name ReportTool --icon "%WORK%\icon.ico" ^
+    --name ReportTool --icon "%WORK%\icon.ico" --version-file "%WORK%\version.txt" ^
     --workpath "%WORK%" --specpath "%WORK%" --distpath "%~dp0dist" ^
     --exclude-module pytest --exclude-module tkinter ^
     --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets ^
