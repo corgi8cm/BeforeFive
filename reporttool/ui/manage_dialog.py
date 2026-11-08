@@ -79,7 +79,7 @@ class CategoryTab(QWidget):
         if cid is None:
             return
         used = self.db.category_usage(cid)
-        note = f"\n\n有 {used} 筆紀錄使用這個分類，刪除後會變成「未分類」。" if used else ""
+        note = f"\n\n有 {used} 筆紀錄使用這個分類，刪除後會移到上一層。" if used else ""
         if QMessageBox.question(self, "刪除分類", f"確定刪除分類「{name}」？{note}") == QMessageBox.Yes:
             self.db.delete_category(cid)
             self.reload()
