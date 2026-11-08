@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS images (
 """
 
 LIVE = "deleted_at IS NULL"
+# 程式自動建立的預設分類用最早的時間，匯入備份時對方的設定（排序、進度）一定優先
+EPOCH = "1970-01-01T00:00:00.000Z"
 
 CATEGORIES_V6 = """
 CREATE TABLE categories_v6 (
@@ -140,6 +142,11 @@ class Entry:
         if self.title:
             return self.title
         return self.text.strip().splitlines()[0] if self.text.strip() else ""
+
+
+def same_level_key(entry: Entry) -> tuple:
+    """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依時間。"""
+    return entry.priority, entry.summary, entry.time
 
 
 def normalize_tag(tag: str) -> str:
@@ -233,7 +240,7 @@ class Database:
             self.conn.execute(
                 "UPDATE entries SET uuid=?, created_at=?, updated_at=? WHERE id=?",
                 (row["uuid"] or new_uuid(), _to_utc(row["created_at"]), _to_utc(row["updated_at"]), row["id"]))
-        self.conn.execute("UPDATE categories SET updated_at=? WHERE updated_at IS NULL", (utc_now(),))
+        self.conn.execute("UPDATE categories SET updated_at=? WHERE updated_at IS NULL", (EPOCH,))
         for row in self.conn.execute("SELECT name, last_used FROM tags").fetchall():
             self.conn.execute("UPDATE tags SET last_used=? WHERE name=?", (_to_utc(row["last_used"]), row["name"]))
 
@@ -262,12 +269,11 @@ class Database:
         """
         if "parent_id" not in self._columns("categories"):
             self.conn.execute(CATEGORIES_V6)
-            now = utc_now()
             for r in self.conn.execute("SELECT * FROM categories").fetchall():
                 self.conn.execute(
                     "INSERT INTO categories_v6 (id, uuid, parent_id, name, position, updated_at, deleted_at)"
                     " VALUES (?, ?, NULL, ?, ?, ?, ?)",
-                    (r["id"], category_uuid([r["name"]]), r["name"], r["position"], r["updated_at"] or now,
+                    (r["id"], category_uuid([r["name"]]), r["name"], r["position"], r["updated_at"] or EPOCH,
                      r["deleted_at"]))
             self.conn.execute("DROP TABLE categories")
             self.conn.execute("ALTER TABLE categories_v6 RENAME TO categories")

@@ -190,6 +190,45 @@ def test_legacy_v1_bundle_matches_golden(tmp_path):
     import_bundle(db, folder)
     md = (generate_report(db, "2026-11-02", tmp_path / "out", (GOLDEN / "instructions.md").read_text(
         encoding="utf-8")) / "report.md").read_text(encoding="utf-8")
-    assert md == (GOLDEN / "basic" / "expected_report.md").read_text(encoding="utf-8")
+    expected = (GOLDEN / "basic" / "expected_report.md").read_text(encoding="utf-8")
+    # 第 1 版沒有進度，所以不會有「分類進度」那一段，其他內容相同
+    progress = expected[expected.index("\n## 分類進度\n"):expected.index("\n[附圖1]")]
+    assert md == expected.replace(progress, "")
     v2 = json.loads((GOLDEN / "basic" / "bundle.json").read_text(encoding="utf-8"))
     assert snapshot(db)["entries"] == v2["entries"]
+
+
+# ---- 產出 ----
+
+def test_report_progress_section_lists_used_categories(tmp_path):
+    from reporttool.report import generate_range_report
+
+    db = Database(tmp_path / "data")
+    dev = ids(db)["開發"]
+    proj = db.add_category("專案A", dev)
+    other = db.add_category("專案B", dev)
+    db.set_category_progress(dev, 60)
+    db.set_category_progress(other, 90)  # 沒有紀錄，不列出
+    db.set_category_progress(ids(db)["會議"], 10)  # 沒有紀錄，不列出
+    db.save_entry(Entry(None, DATE, "09:00", "a", "doing", category_id=proj))  # 專案A 沒有進度，但上層有
+    md = (generate_report(db, DATE, tmp_path / "out", "指示") / "report.md").read_text(encoding="utf-8")
+    assert "\n\n## 分類進度\n- 開發：60%\n" in md
+    assert "專案B" not in md and "會議" not in md
+
+    md = (generate_range_report(db, DATE, DATE, tmp_path / "out", "指示") / "report.md").read_text(encoding="utf-8")
+    assert md.endswith("\n## 分類進度\n- 開發：60%\n")
+
+    db.set_category_progress(dev, None)
+    md = (generate_report(db, DATE, tmp_path / "out", "指示") / "report.md").read_text(encoding="utf-8")
+    assert "分類進度" not in md
+
+
+def test_fresh_database_keeps_imported_category_settings(tmp_path):
+    """全新資料庫自動建立的預設分類，不會蓋掉匯入備份裡的排序與進度。"""
+    a = Database(tmp_path / "a")
+    a.set_category_progress(ids(a)["開發"], 60)
+    a.reorder_categories([ids(a)["會議"], ids(a)["開發"]])
+    b = Database(tmp_path / "b")
+    merge(b, snapshot(a), lambda rel: None)
+    assert [label for _, label in b.categories()][:2] == ["會議", "開發"]
+    assert {c.label: c.progress for c in b.category_tree()}["開發"] == 60

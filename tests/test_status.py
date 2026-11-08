@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QApplication
 
 from reporttool.config import load_settings
 from reporttool.db import STATUSES, Database, Entry
-from reporttool.slides import order_by_tag
 from reporttool.sync import import_bundle, snapshot
 from reporttool.ui.entry_dialog import EntryDialog
 from reporttool.ui.main_window import CONTENT_COL, MainWindow
@@ -62,12 +61,6 @@ def test_carry_over_skips_done_and_cancelled(tmp_path):
     assert [e.status for e in db.entries_for_date(DATE)] == ["todo", "doing", "waiting", "review"]
 
 
-def test_slides_status_order():
-    items = [(Entry(None, DATE, "00:00", s, s, ["A"]), []) for s in STATUSES]
-    assert [it[0].status for it in order_by_tag(items)] == ["done", "review", "doing", "waiting", "todo",
-                                                            "cancelled"]
-
-
 def test_dialog_status_shortcut_order(qapp, tmp_path):
     db = Database(tmp_path / "data")
     dlg = EntryDialog(db, DATE)
@@ -91,13 +84,26 @@ def test_cancelled_is_struck_out_and_status_bar_hides_zero(qapp, tmp_path):
     assert "取消 1" in message and "完成 1" in message and "待辦" not in message
 
 
-def test_old_instructions_are_upgraded(tmp_path):
-    from reporttool.config import DEFAULT_INSTRUCTIONS, OLD_STATUS_LINES, load_instructions
+# 1.0.0 的預設 AI 指示（還是三種狀態、沒有 ⇄ 那一行的更舊版本，也要能升級）
+V1_INSTRUCTIONS = """- 先依紀錄中的 [分類：X] 分成大段，用分類名稱當標題（例如 *【開發】*），沒有分類的放在最後的「*【未分類】*」
+- 每個分類內再依 tag 分組，用 tag 當小標題（例如 *#專案A*），相同 tag 的項目放在同一組；一筆有多個 tag 時以第一個為準，沒有 tag 的放在該分類最後
+- 每組內用條列，依「✅ 完成」「👀 待確認」「🔄 進行中」「⏳ 等待中」「📝 待辦」「🚫 取消」的順序排列，每項開頭標上對應的狀態符號
+- 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
+- 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
+- 只用紀錄和圖片中的內容，不要補充或編造
+- 參考圖片內容讓描述更具體，但保留（附圖N）標記
+- 用 Slack mrkdwn 格式，語氣簡潔、專業
+"""
+OLDER_INSTRUCTIONS = V1_INSTRUCTIONS.replace(
+    "依「✅ 完成」「👀 待確認」「🔄 進行中」「⏳ 等待中」「📝 待辦」「🚫 取消」的順序", "依「✅ 完成」「🔄 進行中」「⛔ 卡住」的順序"
+).replace(V1_INSTRUCTIONS.splitlines()[4] + "\n", "")
 
-    old = DEFAULT_INSTRUCTIONS.replace(DEFAULT_INSTRUCTIONS.splitlines()[2], OLD_STATUS_LINES[0])
-    old = old.replace(DEFAULT_INSTRUCTIONS.splitlines()[4] + "\n", "")
-    custom = "- 我自己加的規則\n" + old
-    (tmp_path / "instructions.md").write_text(custom, encoding="utf-8")
+
+@pytest.mark.parametrize("old", [V1_INSTRUCTIONS, OLDER_INSTRUCTIONS])
+def test_old_instructions_are_upgraded(tmp_path, old):
+    from reporttool.config import DEFAULT_INSTRUCTIONS, load_instructions
+
+    (tmp_path / "instructions.md").write_text("- 我自己加的規則\n" + old, encoding="utf-8")
     text = load_instructions(load_settings(tmp_path))
     assert text == "- 我自己加的規則\n" + DEFAULT_INSTRUCTIONS
     assert load_instructions(load_settings(tmp_path)) == text  # 再開一次不會重複加

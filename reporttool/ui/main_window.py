@@ -1,57 +1,73 @@
-"""主視窗：檢視／編輯某天的紀錄、帶入未完成項目、工作回顧。"""
+"""主視窗：左邊分類樹（含進度），右邊某天的紀錄；帶入未完成項目、工作回顧。"""
 import os
 import subprocess
+from dataclasses import dataclass, field
 from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
+    QInputDialog, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QTreeWidgetItemIterator, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
 from ..changes import changes_for
 from ..config import Settings, load_instructions
-from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
+from ..db import STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, same_level_key
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
 from .entry_dialog import STATUS_COLORS, EntryDialog
-from .manage_dialog import ManageDialog
+from .manage_dialog import ManageDialog, ProgressDialog
+from .progress_delegate import PROGRESS_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
 
 ALL, UNCATEGORIZED = "all", "none"
-NO_TAG_LABEL = "沒有 tag"
+ALL_LABEL = "全部"
 UNCATEGORIZED_LABEL = "未分類"
 GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展開／收合狀態
+SIDEBAR_KEY = Qt.UserRole + 2
 PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}
-CONTENT_COL = 5
+CATEGORY_COL, CONTENT_COL = 3, 5
+SIDE_NAME, SIDE_COUNT, SIDE_PROGRESS = 0, 1, 2
 
 
-def by_priority(entries: list[Entry]) -> list[Entry]:
-    """優先順序高（數字小）的排前面，相同時維持原本的時間順序。"""
-    return sorted(entries, key=lambda e: e.priority)
+def sort_entries(entries: list[Entry]) -> list[Entry]:
+    """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依時間。"""
+    return sorted(entries, key=same_level_key)
 
 
-def group_by_tag(entries: list[Entry]) -> list[tuple[str | None, list[Entry]]]:
-    """依第一個 tag 分組（和回報、PPT 相同規則）。組的順序依最早一筆的時間，沒有 tag 的放最後。"""
-    groups: dict[str | None, list[Entry]] = {}
+@dataclass
+class Group:
+    """清單中的一個分類群組：直接屬於它的紀錄，以及有紀錄的子分類。"""
+    category: Category
+    entries: list[Entry]
+    children: list["Group"] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.entries) + sum(g.count for g in self.children)
+
+
+def outline(entries: list[Entry], nodes: list[Category], root_id=None) -> tuple[list[Entry], list[Group]]:
+    """依分類樹分組。回傳（直接屬於 root_id 的紀錄, 子分類群組）；沒有紀錄的分類不列出，分類順序照手動排序。"""
+    by_category: dict = {}
     for e in entries:
-        groups.setdefault(e.tags[0] if e.tags else None, []).append(e)
-    untagged = groups.pop(None, None)
-    return list(groups.items()) + ([(None, untagged)] if untagged else [])
+        by_category.setdefault(e.category_id, []).append(e)
+    children: dict = {}
+    for node in nodes:
+        children.setdefault(node.parent_id, []).append(node)
 
+    def build(node: Category) -> Group:
+        subgroups = [g for g in (build(c) for c in children.get(node.id, [])) if g.count]
+        return Group(node, sort_entries(by_category.get(node.id, [])), subgroups)
 
-def group_by_category(entries: list[Entry], category_order: list[str]) -> list[tuple[str, list[Entry]]]:
-    """依分類分組，順序照「管理分類」，未分類放最後；沒有紀錄的分類不列出。"""
-    order = {name: i for i, name in enumerate(category_order)}
-    groups: dict[str, list[Entry]] = {}
-    for e in entries:
-        groups.setdefault(e.category, []).append(e)
-    return sorted(groups.items(), key=lambda kv: (kv[0] == "", order.get(kv[0], len(order)), kv[0]))
+    direct = sort_entries(by_category.get(root_id, [])) if root_id is not None else []
+    groups = [g for g in (build(n) for n in children.get(root_id, [])) if g.count]
+    return direct, groups
 
 
 def open_path(path):
@@ -68,8 +84,9 @@ class MainWindow(QMainWindow):
         self.db = db
         self.settings = settings
         self._quick_dialog = None
+        self._nodes: list[Category] = []
         self.setWindowTitle(f"工作回報工具 v{__version__}")
-        self.resize(820, 520)
+        self.resize(1100, 600)
 
         self.date_edit = QDateEdit(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
@@ -87,13 +104,9 @@ class MainWindow(QMainWindow):
         top.addWidget(self.date_edit)
         top.addWidget(button("▶", lambda: self.date_edit.setDate(self.date_edit.date().addDays(1))))
         top.addWidget(button("今天", self.go_today))
-        self.category_filter = QComboBox()
-        self.category_filter.setToolTip("依分類篩選")
-        self.category_filter.currentIndexChanged.connect(lambda _i: self.refresh())
-        top.addWidget(self.category_filter)
-        self.group_box = QCheckBox("依 tag 分組")
+        self.group_box = QCheckBox("依分類分組")
         self.group_box.setChecked(True)
-        self.group_box.setToolTip("相同 tag 的紀錄放在同一組（以第一個 tag 為準）；選「全部分類」時先分分類、再分 tag")
+        self.group_box.setToolTip("照分類樹分組；同一層依優先順序、再依標題排列")
         self.group_box.toggled.connect(lambda _c: self.refresh())
         top.addWidget(self.group_box)
         top.addStretch()
@@ -104,6 +117,23 @@ class MainWindow(QMainWindow):
         top.addWidget(self.review_btn)
         top.addWidget(button("📅 範圍整理", self.review_range, "選擇日期範圍，整理期間內的所有紀錄（例如週報）"))
         top.addWidget(button("📊 匯出 PPT", self.export_ppt, "一則紀錄一頁，存成 report_日期/report.pptx"))
+
+        # 左邊：分類樹（點選後右邊只顯示這個分類與子分類的紀錄）
+        self.sidebar = QTreeWidget()
+        self.sidebar.setHeaderLabels(["分類", "筆", "進度"])
+        self.sidebar.setIndentation(14)
+        self.sidebar.setMinimumWidth(260)
+        self.sidebar.setItemDelegateForColumn(SIDE_PROGRESS, ProgressDelegate(self.sidebar))
+        self.sidebar.setSelectionMode(QAbstractItemView.SingleSelection)
+        side_header = self.sidebar.header()
+        side_header.setStretchLastSection(False)
+        side_header.setSectionResizeMode(SIDE_NAME, QHeaderView.Stretch)
+        self.sidebar.setColumnWidth(SIDE_COUNT, 34)
+        self.sidebar.setColumnWidth(SIDE_PROGRESS, 112)
+        self.sidebar.currentItemChanged.connect(lambda *_: self.refresh())
+        self.sidebar.itemDoubleClicked.connect(self._sidebar_double_clicked)
+        self.sidebar.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["時間", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
@@ -122,6 +152,12 @@ class MainWindow(QMainWindow):
         for col in (0, 1, 2, 3, 4, 6):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(CONTENT_COL, QHeaderView.Stretch)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self.sidebar)
+        splitter.addWidget(self.tree)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([380, 820])
 
         bottom = QHBoxLayout()
         bottom.addWidget(button("編輯", self.edit_selected))
@@ -143,7 +179,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.addLayout(top)
-        layout.addWidget(self.tree)
+        layout.addWidget(splitter, 1)
         layout.addLayout(bottom)
         self.setCentralWidget(central)
 
@@ -157,26 +193,135 @@ class MainWindow(QMainWindow):
         self.date_edit.setDate(QDate.currentDate())
         self.refresh()
 
+    # ---- 左邊分類樹 ----
+
     def reload_categories(self):
-        """分類清單有變動時重建篩選選單，並盡量保留目前的選擇。"""
-        current = self.category_filter.currentData()
-        self.category_filter.blockSignals(True)
-        self.category_filter.clear()
-        self.category_filter.addItem("全部分類", ALL)
-        for cid, name in self.db.categories():
-            self.category_filter.addItem(name, cid)
-        self.category_filter.addItem("未分類", UNCATEGORIZED)
-        self.category_filter.setCurrentIndex(max(self.category_filter.findData(current), 0))
-        self.category_filter.blockSignals(False)
+        """分類有變動時重建左邊的分類樹，並盡量保留目前的選擇。"""
+        current = self.selected_category()
+        self._nodes = self.db.category_tree()
+        self.sidebar.blockSignals(True)
+        self.sidebar.clear()
+        all_item = QTreeWidgetItem([ALL_LABEL])
+        all_item.setData(SIDE_NAME, SIDEBAR_KEY, ALL)
+        self.sidebar.addTopLevelItem(all_item)
+        items = {ALL: all_item}
+        for node in self._nodes:
+            item = QTreeWidgetItem([node.name])
+            item.setData(SIDE_NAME, SIDEBAR_KEY, node.id)
+            item.setData(SIDE_PROGRESS, PROGRESS_ROLE, node.progress)
+            item.setToolTip(SIDE_NAME, node.label)
+            item.setToolTip(SIDE_PROGRESS, "雙擊設定進度")
+            parent = items.get(node.parent_id)
+            if parent is not None and node.parent_id is not None:
+                parent.addChild(item)
+            else:
+                self.sidebar.addTopLevelItem(item)
+            items[node.id] = item
+        none_item = QTreeWidgetItem([UNCATEGORIZED_LABEL])
+        none_item.setData(SIDE_NAME, SIDEBAR_KEY, UNCATEGORIZED)
+        self.sidebar.addTopLevelItem(none_item)
+        items[UNCATEGORIZED] = none_item
+        for item in items.values():
+            item.setTextAlignment(SIDE_COUNT, Qt.AlignCenter)
+        self.sidebar.expandAll()
+        self.sidebar.setCurrentItem(items.get(current, all_item))
+        self.sidebar.blockSignals(False)
         self.refresh()
 
-    def _visible(self, entry) -> bool:
-        selected = self.category_filter.currentData()
-        if selected in (None, ALL):
+    def selected_category(self):
+        """左邊選到的分類：ALL、UNCATEGORIZED 或分類 id。"""
+        item = self.sidebar.currentItem()
+        return item.data(SIDE_NAME, SIDEBAR_KEY) if item else ALL
+
+    def select_category(self, key):
+        it = QTreeWidgetItemIterator(self.sidebar)
+        while it.value():
+            if it.value().data(SIDE_NAME, SIDEBAR_KEY) == key:
+                self.sidebar.setCurrentItem(it.value())
+                return
+            it += 1
+
+    def _update_sidebar_counts(self, entries: list[Entry]):
+        """每個分類（含子分類）在這一天的紀錄數。"""
+        parents = {n.id: n.parent_id for n in self._nodes}
+        counts: dict = {ALL: len(entries), UNCATEGORIZED: 0}
+        for e in entries:
+            if e.category_id is None:
+                counts[UNCATEGORIZED] += 1
+            cid, seen = e.category_id, set()
+            while cid is not None and cid not in seen:
+                seen.add(cid)
+                counts[cid] = counts.get(cid, 0) + 1
+                cid = parents.get(cid)
+        it = QTreeWidgetItemIterator(self.sidebar)
+        while it.value():
+            n = counts.get(it.value().data(SIDE_NAME, SIDEBAR_KEY), 0)
+            it.value().setText(SIDE_COUNT, str(n) if n else "")
+            it += 1
+
+    def _sidebar_double_clicked(self, item, column):
+        if column == SIDE_PROGRESS:
+            self.edit_category_progress()
+
+    def _sidebar_menu(self, pos):
+        item = self.sidebar.itemAt(pos)
+        key = item.data(SIDE_NAME, SIDEBAR_KEY) if item else None
+        menu = QMenu(self)
+        if isinstance(key, int):
+            self.sidebar.setCurrentItem(item)
+            menu.addAction("設定進度…", self.edit_category_progress)
+            menu.addAction("新增子分類…", self.add_child_category)
+            menu.addSeparator()
+        menu.addAction("管理分類與標籤…", self.manage)
+        menu.exec(self.sidebar.viewport().mapToGlobal(pos))
+
+    def edit_category_progress(self):
+        key = self.selected_category()
+        node = next((n for n in self._nodes if n.id == key), None)
+        if node is None:
+            return
+        dlg = ProgressDialog(node.name, node.progress, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.db.set_category_progress(node.id, dlg.value())
+            self.reload_categories()
+
+    def add_child_category(self):
+        key = self.selected_category()
+        node = next((n for n in self._nodes if n.id == key), None)
+        if node is None:
+            return
+        name, ok = QInputDialog.getText(self, "新增子分類", f"在「{node.name}」底下新增：")
+        if not ok:
+            return
+        try:
+            self.select_category_after_reload(self.db.add_category(name, node.id))
+        except ValueError as e:
+            QMessageBox.warning(self, "新增子分類", str(e))
+
+    def select_category_after_reload(self, category_id):
+        self.reload_categories()
+        self.select_category(category_id)
+
+    # ---- 右邊紀錄清單 ----
+
+    def _visible(self, entry, key) -> bool:
+        if key in (None, ALL):
             return True
-        if selected == UNCATEGORIZED:
+        if key == UNCATEGORIZED:
             return entry.category_id is None
-        return entry.category_id == selected
+        return entry.category_id in self._subtree(key)
+
+    def _subtree(self, category_id) -> set:
+        children: dict = {}
+        for n in self._nodes:
+            children.setdefault(n.parent_id, []).append(n.id)
+        result, stack = set(), [category_id]
+        while stack:
+            cid = stack.pop()
+            if cid not in result:
+                result.add(cid)
+                stack += children.get(cid, [])
+        return result
 
     def _entry_item(self, e: Entry) -> QTreeWidgetItem:
         first_line = e.summary
@@ -205,8 +350,9 @@ class MainWindow(QMainWindow):
         item.setData(0, Qt.UserRole, e.id)
         return item
 
-    def _group_item(self, parent, title: str, count: int, key) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([f"{title}（{count}）"])
+    def _group_item(self, parent, title: str, count: int, key, progress=None) -> QTreeWidgetItem:
+        text = f"{title}（{count}）" + (f"　進度 {progress}%" if progress is not None else "")
+        item = QTreeWidgetItem([text])
         item.setFlags(Qt.ItemIsEnabled)  # 不能選取，避免被當成紀錄編輯或刪除
         font = QFont(item.font(0))
         font.setBold(True)
@@ -219,24 +365,31 @@ class MainWindow(QMainWindow):
         item.setFirstColumnSpanned(True)
         return item
 
-    def _add_tag_groups(self, parent, entries: list[Entry], key_prefix: str):
-        for tag, members in group_by_tag(entries):
-            group = self._group_item(parent, f"#{tag}" if tag else NO_TAG_LABEL, len(members), (key_prefix, tag))
-            group.addChildren([self._entry_item(e) for e in by_priority(members)])
+    def _add_groups(self, parent, groups: list[Group]):
+        for g in groups:
+            item = self._group_item(parent, g.category.name, g.count, ("cat", g.category.id), g.category.progress)
+            item.addChildren([self._entry_item(e) for e in g.entries])
+            self._add_groups(item, g.children)
 
     def refresh(self):
         self.tree.clear()
-        entries = [e for e in self.db.entries_for_date(self.current_date) if self._visible(e)]
-        grouped = self.group_box.isChecked()
+        day_entries = self.db.entries_for_date(self.current_date)
+        self._update_sidebar_counts(day_entries)
+        key = self.selected_category()
+        entries = [e for e in day_entries if self._visible(e, key)]
+        grouped = self.group_box.isChecked() and key != UNCATEGORIZED
         self.tree.setRootIsDecorated(grouped)
+        self.tree.setColumnHidden(CATEGORY_COL, grouped)  # 分組時分類就是群組標題，不用重複
         if not grouped:
-            self.tree.addTopLevelItems([self._entry_item(e) for e in by_priority(entries)])
-        elif self.category_filter.currentData() in (None, ALL):
-            for category, members in group_by_category(entries, [n for _, n in self.db.categories()]):
-                group = self._group_item(None, f"【{category or UNCATEGORIZED_LABEL}】", len(members), category)
-                self._add_tag_groups(group, members, category)
+            self.tree.addTopLevelItems([self._entry_item(e) for e in sort_entries(entries)])
         else:
-            self._add_tag_groups(None, entries, self.category_filter.currentText())
+            direct, groups = outline(entries, self._nodes, None if key == ALL else key)
+            self.tree.addTopLevelItems([self._entry_item(e) for e in direct])
+            self._add_groups(None, groups)
+            uncategorized = [e for e in entries if e.category_id is None] if key == ALL else []
+            if uncategorized:
+                group = self._group_item(None, UNCATEGORIZED_LABEL, len(uncategorized), ("none",))
+                group.addChildren([self._entry_item(e) for e in sort_entries(uncategorized)])
 
         # 還原使用者收合過的群組；過程中不要觸發 itemExpanded 改到 _collapsed
         self.tree.blockSignals(True)
@@ -249,7 +402,8 @@ class MainWindow(QMainWindow):
         self.tree.blockSignals(False)
 
         counts = {s: sum(e.status == s for e in entries) for s in STATUS_LABELS}
-        scope = "" if self.category_filter.currentData() in (None, ALL) else f"［{self.category_filter.currentText()}］"
+        current = self.sidebar.currentItem()
+        scope = "" if key == ALL or current is None else f"［{current.toolTip(SIDE_NAME) or current.text(SIDE_NAME)}］"
         self.statusBar().showMessage(
             f"{self.current_date}{scope}：共 {len(entries)} 筆　" +
             "　".join(f"{STATUS_LABELS[s]} {counts[s]}" for s in STATUS_LABELS if counts[s]))
