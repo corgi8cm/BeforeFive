@@ -188,3 +188,73 @@ def test_set_category_priority_from_sidebar(win):
     assert item.text(mw.SIDE_PRIORITY) == "1"
     win.select_category("all")
     assert tree_outline(win)[0][0] == "會議（1）"  # 右邊分組也照優先度
+
+
+def sidebar_item(win, key):
+    from PySide6.QtWidgets import QTreeWidgetItemIterator
+    it = QTreeWidgetItemIterator(win.sidebar)
+    while it.value():
+        if it.value().data(mw.SIDE_NAME, mw.SIDEBAR_KEY) == key:
+            return it.value()
+        it += 1
+
+
+def drop_on(win, qapp, mime, key):
+    """模擬把 mime 拖到左邊分類樹的 key 上放開，回傳事件有沒有被接受。"""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+    win.show()
+    pos = QPointF(win.sidebar.visualItemRect(sidebar_item(win, key)).center())
+    event = QDropEvent(pos, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier, QEvent.Drop)
+    win.sidebar.dropEvent(event)
+    qapp.processEvents()
+    return event.isAccepted()
+
+
+def test_drag_entries_onto_category(win, qapp):
+    db = win.db
+    items = {i.text(CONTENT_COL): i for i in win.entry_items()}
+    # 群組標題不會被當成紀錄拖出去
+    group = win.tree.topLevelItem(0)
+    ids = {text: item.data(0, mw.Qt.UserRole) for text, item in items.items()}
+    mime = win.tree.mimeData([items["週會"], items["雜事"], group])
+    assert mw.entry_ids_from_mime(mime) == [ids["週會"], ids["雜事"]]
+
+    win.select_category(win.ids["會議"])
+    assert drop_on(win, qapp, mime, win.ids["開發 › 專案A"])
+    moved = {e.summary: e.category for e in db.entries_for_date(DATE)}
+    assert moved["週會"] == moved["雜事"] == "開發 › 專案A"
+    assert win.selected_category() == win.ids["會議"]  # 畫面停在原本選的分類
+    assert "已把 2 筆紀錄移到「開發 › 專案A」" in win.statusBar().currentMessage()
+
+    # 拖到「未分類」就是清除分類；拖到「全部」不接受
+    assert drop_on(win, qapp, mw.entry_ids_mime([ids["週會"]]), mw.UNCATEGORIZED)
+    assert {e.summary: e.category_id for e in db.entries_for_date(DATE)}["週會"] is None
+    assert not drop_on(win, qapp, mime, mw.ALL)
+    assert {e.summary: e.category for e in db.entries_for_date(DATE)}["雜事"] == "開發 › 專案A"
+    win.close()
+
+
+def test_set_entries_category(tmp_path):
+    db = Database(tmp_path / "data")
+    cats = {n: i for i, n in db.categories()}
+    a = db.save_entry(e("a", category_id=cats["會議"]))
+    b = db.save_entry(e("b"))
+    before = db.conn.execute("SELECT updated_at FROM entries WHERE id=?", (a,)).fetchone()[0]
+    assert db.set_entries_category([a, b], cats["會議"]) == 1  # a 本來就在會議，不算改動，也不更新修改時間
+    assert db.conn.execute("SELECT updated_at FROM entries WHERE id=?", (a,)).fetchone()[0] == before
+    assert db.get_entry(b).category == "會議"
+    assert db.set_entries_category([a, b], None) == 2
+    with pytest.raises(ValueError):
+        db.set_entries_category([a], 99999)
+
+
+def test_delete_multiple_selected(win, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: asked.append(a[2]) or QMessageBox.Yes)
+    for item in win.entry_items():
+        item.setSelected(item.text(CONTENT_COL) in ("週會", "雜事"))
+    win.delete_selected()
+    assert "確定刪除這 2 筆紀錄？" in asked[0]
+    assert sorted(e.summary for e in win.db.entries_for_date(DATE)) == ["修登入頁", "寫測試", "整理架構", "整理筆記"]

@@ -416,6 +416,18 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE entries SET status=?, updated_at=? WHERE id=?", (status, utc_now(), entry_id))
 
+    def set_entries_category(self, entry_ids, category_id: int | None) -> int:
+        """把幾筆紀錄移到某個分類（None = 未分類），回傳實際改動的筆數；分類不存在時 ValueError。"""
+        if category_id is not None and not self._live_category(category_id):
+            raise ValueError("分類不存在")
+        changed = 0
+        with self.conn:
+            for entry_id in entry_ids:
+                changed += self.conn.execute(
+                    f"UPDATE entries SET category_id=?, updated_at=? WHERE id=? AND {LIVE} AND category_id IS NOT ?",
+                    (category_id, utc_now(), entry_id, category_id)).rowcount
+        return changed
+
     def history(self, entry_id: int | None) -> list[Entry]:
         """沿著 carried_from 往前找這件工作先前的紀錄，由舊到新，不含 entry_id 本身。"""
         chain = []

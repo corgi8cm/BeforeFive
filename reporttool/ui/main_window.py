@@ -4,8 +4,8 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import date
 
-from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QByteArray, QDate, QItemSelectionModel, QMimeData, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
     QInputDialog, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
@@ -72,6 +72,98 @@ def outline(entries: list[Entry], nodes: list[Category], root_id=None) -> tuple[
     return direct, groups
 
 
+ENTRY_MIME = "application/x-reporttool-entry-ids"
+
+
+def entry_ids_mime(ids) -> QMimeData:
+    mime = QMimeData()
+    mime.setData(ENTRY_MIME, QByteArray(",".join(str(i) for i in ids).encode()))
+    return mime
+
+
+def entry_ids_from_mime(mime: QMimeData) -> list[int]:
+    if not mime.hasFormat(ENTRY_MIME):
+        return []
+    return [int(x) for x in bytes(mime.data(ENTRY_MIME)).decode().split(",") if x.strip().isdigit()]
+
+
+class EntryTree(QTreeWidget):
+    """右邊的紀錄清單：選取的紀錄可以拖到左邊的分類樹（群組標題不能拖）。"""
+
+    def mimeTypes(self):
+        return [ENTRY_MIME]
+
+    def mimeData(self, items):
+        ids = [i.data(0, Qt.UserRole) for i in items if i.data(0, Qt.UserRole)]
+        return entry_ids_mime(ids)
+
+    def supportedDropActions(self):
+        return Qt.CopyAction  # 用複製，避免拖曳結束後 Qt 把清單裡的項目移除
+
+
+class CategoryDropTree(QTreeWidget):
+    """左邊的分類樹：接受從清單拖過來的紀錄，放到分類或「未分類」上。"""
+    entries_dropped = Signal(list, object)  # (紀錄 id, 分類 id 或 UNCATEGORIZED)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DropOnly)
+        self._hover = None
+
+    def drop_key(self, pos):
+        """pos 底下可以放的目標；「全部」或空白處回傳 None。"""
+        item = self.itemAt(pos)
+        key = item.data(0, SIDEBAR_KEY) if item else None
+        return (item, key) if isinstance(key, int) or key == UNCATEGORIZED else (None, None)
+
+    def _set_hover(self, item):
+        if item is self._hover:
+            return
+        if self._hover is not None:
+            try:
+                for c in range(self.columnCount()):
+                    self._hover.setBackground(c, QBrush())
+            except RuntimeError:  # 分類樹已重建，舊的項目不在了
+                pass
+        self._hover = item
+        if item is not None:
+            for c in range(self.columnCount()):
+                item.setBackground(c, self.palette().highlight().color().lighter(160))
+
+    def dragEnterEvent(self, event):
+        if entry_ids_from_mime(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        item, _key = self.drop_key(event.position().toPoint())
+        self._set_hover(item)
+        if item is not None and entry_ids_from_mime(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_hover(None)
+        event.accept()
+
+    def dropEvent(self, event):
+        self._set_hover(None)
+        _item, key = self.drop_key(event.position().toPoint())
+        ids = entry_ids_from_mime(event.mimeData())
+        if key is None or not ids:
+            event.ignore()
+            return
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+        # 拖曳還沒結束前不要重建清單，等事件處理完再更新
+        QTimer.singleShot(0, lambda: self.entries_dropped.emit(ids, key))
+
+
 def open_path(path):
     """用系統預設程式開啟；.md 沒有關聯程式時改用記事本。"""
     try:
@@ -126,7 +218,8 @@ class MainWindow(QMainWindow):
         top.addWidget(button("📊 匯出 PPT", self.export_ppt, "一則紀錄一頁，存成 report_日期/report.pptx"))
 
         # 左邊：分類樹（點選後右邊只顯示這個分類與子分類的紀錄）
-        self.sidebar = QTreeWidget()
+        self.sidebar = CategoryDropTree()
+        self.sidebar.entries_dropped.connect(self.move_entries)
         self.sidebar.setHeaderLabels(["分類", "優", "筆", "進度"])
         self.sidebar.setIndentation(14)
         self.sidebar.setMinimumWidth(260)
@@ -143,11 +236,14 @@ class MainWindow(QMainWindow):
         self.sidebar.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
 
-        self.tree = QTreeWidget()
+        self.tree = EntryTree()
         self.tree.setHeaderLabels(["時間", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
-        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        # 可以多選（Ctrl／Shift），把選取的紀錄拖到左邊的分類上
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setDragEnabled(True)
+        self.tree.setDragDropMode(QAbstractItemView.DragOnly)
         # 雙擊群組標題是展開／收合，只有雙擊紀錄才編輯
         self.tree.itemDoubleClicked.connect(lambda item, _c: self.edit_selected() if self._entry_id(item) else None)
         self._collapsed = set()
@@ -512,6 +608,34 @@ class MainWindow(QMainWindow):
     def _selected_id(self):
         return self._entry_id(self.tree.currentItem())
 
+    def _selected_ids(self) -> list[int]:
+        """選取的所有紀錄（多選時）；沒有選取時用目前那一筆。"""
+        ids = [self._entry_id(i) for i in self.tree.selectedItems() if self._entry_id(i)]
+        return ids or ([self._selected_id()] if self._selected_id() else [])
+
+    def select_entries(self, ids):
+        wanted = set(ids)
+        self.tree.clearSelection()
+        for item in self.entry_items():
+            if self._entry_id(item) in wanted:
+                item.setSelected(True)
+                self.tree.setCurrentItem(item, 0, QItemSelectionModel.NoUpdate)
+
+    def move_entries(self, ids: list[int], key):
+        """把紀錄拖到左邊的分類（或「未分類」）放開：改成那個分類，畫面停在原本選的分類。"""
+        category_id = None if key == UNCATEGORIZED else key
+        try:
+            changed = self.db.set_entries_category(ids, category_id)
+        except ValueError as e:
+            QMessageBox.warning(self, "移動紀錄", str(e))
+            return
+        self.refresh()
+        self.select_entries(ids)
+        if changed:
+            target = UNCATEGORIZED_LABEL if category_id is None else self.db.category_label(category_id)
+            self.statusBar().showMessage(
+                f"{self.statusBar().currentMessage()}　｜　已把 {changed} 筆紀錄移到「{target}」")
+
     def _context_menu(self, pos):
         item = self.tree.itemAt(pos)
         entry_id = self._entry_id(item)
@@ -579,13 +703,16 @@ class MainWindow(QMainWindow):
         self.reload_categories()
 
     def delete_selected(self):
-        entry_id = self._selected_id()
-        if entry_id is None:
+        entries = [e for e in (self.db.get_entry(i) for i in self._selected_ids()) if e]
+        if not entries:
             return
-        entry = self.db.get_entry(entry_id)
-        if QMessageBox.question(self, "刪除紀錄", f"確定刪除這筆紀錄？\n\n[{entry.time}] {entry.summary[:60]}") \
-                == QMessageBox.Yes:
-            self.db.delete_entry(entry_id)
+        lines = "\n".join(f"[{e.time}] {e.summary[:60]}" for e in entries[:10])
+        if len(entries) > 10:
+            lines += f"\n…等共 {len(entries)} 筆"
+        question = "確定刪除這筆紀錄？" if len(entries) == 1 else f"確定刪除這 {len(entries)} 筆紀錄？"
+        if QMessageBox.question(self, "刪除紀錄", f"{question}\n\n{lines}") == QMessageBox.Yes:
+            for e in entries:
+                self.db.delete_entry(e.id)
             self.refresh()
 
     # ---- 帶入 / 回顧 ----
