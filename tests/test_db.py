@@ -75,3 +75,27 @@ def test_carry_over(tmp_path):
     assert db.carry_over("2026-10-30", "2026-11-02") == []
     # 原本的紀錄保留
     assert len(db.entries_for_date("2026-10-30")) == 3
+
+
+def test_carry_over_skips_work_continued_elsewhere(tmp_path):
+    """同一件工作已經有更新的紀錄（同一天追加進度、或從更早的紀錄追加）時，不再帶入舊的那筆。"""
+    db = Database(tmp_path / "data")
+    # 同一天建立、追加進度，最後一筆標成完成
+    first = db.save_entry(Entry(None, "2026-11-09", "09:00", "做 X", "doing"))
+    db.save_entry(Entry(None, "2026-11-09", "15:00", "做 X 完成", "done", carried_from=first))
+    # 同一天追加但還沒完成：只帶入最新那筆
+    other = db.save_entry(Entry(None, "2026-11-09", "10:00", "做 Z", "doing"))
+    db.save_entry(Entry(None, "2026-11-09", "16:00", "做 Z 下午", "waiting", carried_from=other))
+    assert [e.text for e in db.carry_over_candidates("2026-11-09", "2026-11-10")] == ["做 Z 下午"]
+
+    # 從比較舊的紀錄追加並標成完成，中間那天的紀錄也不再帶入
+    a = db.save_entry(Entry(None, "2026-11-01", "09:00", "做 Y", "doing"))
+    db.save_entry(Entry(None, "2026-11-02", "09:00", "做 Y 第二天", "doing", carried_from=a))
+    db.save_entry(Entry(None, "2026-11-03", "09:00", "做 Y 完成", "done", carried_from=a))
+    assert db.carry_over_candidates("2026-11-02", "2026-11-03") == []
+
+    # 刪掉新的那筆，舊的又會被帶入
+    b = db.save_entry(Entry(None, "2026-11-05", "09:00", "做 W", "doing"))
+    newer = db.save_entry(Entry(None, "2026-11-05", "10:00", "做 W 完成", "done", carried_from=b))
+    db.delete_entry(newer)
+    assert [e.text for e in db.carry_over_candidates("2026-11-05", "2026-11-06")] == ["做 W"]

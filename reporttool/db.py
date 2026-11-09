@@ -645,7 +645,10 @@ class Database:
         return row["d"]
 
     def carry_over_candidates(self, from_date: str, to_date: str) -> list[Entry]:
-        """from_date 中未完成（不是完成或取消）且尚未帶入 to_date 的紀錄。"""
+        """from_date 中未完成（不是完成或取消）、尚未帶入 to_date，而且是這件工作最新一筆的紀錄。
+
+        同一件工作（carried_from 串起來的紀錄）只要已經有比它新的紀錄（例如同一天追加了進度、
+        或從更早的紀錄追加並標成完成），就以新的那筆為準，不再帶入舊的。"""
         marks = ", ".join("?" * len(UNFINISHED))
         rows = self.conn.execute(
             f"SELECT * FROM entries e WHERE e.date=? AND e.status IN ({marks}) AND e.deleted_at IS NULL"
@@ -654,7 +657,49 @@ class Database:
             " ORDER BY e.time, e.id",
             (from_date, *UNFINISHED, to_date),
         ).fetchall()
-        return [self._load(r) for r in rows]
+        if not rows:
+            return []
+        newer = self._superseded_entries()
+        return [self._load(r) for r in rows if r["id"] not in newer]
+
+    def _superseded_entries(self) -> set[int]:
+        """同一件工作中，已經有更新紀錄（日期、時間較晚）的那些紀錄 id。"""
+        rows = self.conn.execute("SELECT id, carried_from, date, time, deleted_at FROM entries").fetchall()
+        parent = {r["id"]: r["carried_from"] for r in rows}
+        children: dict[int, list[int]] = {}
+        for r in rows:
+            if r["carried_from"] is not None:
+                children.setdefault(r["carried_from"], []).append(r["id"])
+        key = {r["id"]: (r["date"], r["time"], r["id"]) for r in rows if r["deleted_at"] is None}
+
+        def root(i):
+            seen = {i}
+            while parent.get(i) is not None and parent[i] in parent and parent[i] not in seen:
+                i = parent[i]
+                seen.add(i)
+            return i
+
+        superseded = set()
+        done_roots = set()
+        for r in rows:
+            top = root(r["id"])
+            if top in done_roots:
+                continue
+            done_roots.add(top)
+            members, stack = [], [top]
+            seen = {top}
+            while stack:
+                i = stack.pop()
+                if i in key:
+                    members.append(i)
+                for c in children.get(i, []):
+                    if c not in seen:
+                        seen.add(c)
+                        stack.append(c)
+            if len(members) > 1:
+                latest = max(members, key=key.get)
+                superseded.update(m for m in members if m != latest)
+        return superseded
 
     def carry_over(self, from_date: str, to_date: str, time: str | None = None) -> list[int]:
         """把未完成項目複製成 to_date 的新紀錄（不帶圖片），回傳新 id。"""
