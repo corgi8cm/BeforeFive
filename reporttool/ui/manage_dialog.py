@@ -1,12 +1,13 @@
-"""管理分類（樹狀：新增、子分類、改名、進度、移動、排序、刪除）與標籤（改名／合併、刪除）。"""
+"""管理分類（樹狀：新增、子分類、改名、優先度、進度、移動、排序、刪除）與標籤（改名／合併、刪除）。"""
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSlider, QSpinBox, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..db import Database
+from ..db import DEFAULT_PRIORITY, PRIORITIES, Database
 from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 
 
@@ -21,8 +22,30 @@ def _side_buttons(*buttons) -> QVBoxLayout:
     return col
 
 
-NAME_COL, COUNT_COL, PROGRESS_COL = 0, 1, 2
+NAME_COL, PRIORITY_COL, COUNT_COL, PROGRESS_COL = 0, 1, 2, 3
 TOP_LEVEL = "（第一層）"
+PRIORITY_ROLE = Qt.UserRole + 12
+PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}  # 和主視窗紀錄的優先順序同色
+PRIORITY_CHOICES = {1: "1（最優先）", 2: "2", 3: "3（預設）", 4: "4", 5: "5（最後）"}
+
+
+def show_priority(item, column: int, priority: int):
+    """在樹狀檢視的某一欄顯示分類優先度（1、2 以紅、橘色標示）。"""
+    item.setText(column, str(priority))
+    item.setData(column, PRIORITY_ROLE, priority)
+    item.setTextAlignment(column, Qt.AlignCenter)
+    if priority in PRIORITY_COLORS:
+        item.setForeground(column, QColor(PRIORITY_COLORS[priority]))
+    item.setToolTip(column, f"優先度 {priority}（同一層先依優先度、再依手動順序排列；雙擊修改）")
+
+
+def ask_category_priority(parent, name: str, current: int) -> int | None:
+    """詢問分類優先度，取消時回傳 None。"""
+    labels = [PRIORITY_CHOICES[p] for p in PRIORITIES]
+    label, ok = QInputDialog.getItem(
+        parent, "設定優先度", f"「{name}」的優先度（同一層先依優先度、再依手動順序排列）：",
+        labels, PRIORITIES.index(current if current in PRIORITIES else DEFAULT_PRIORITY), False)
+    return PRIORITIES[labels.index(label)] if ok else None
 
 
 class ProgressDialog(QDialog):
@@ -84,13 +107,14 @@ class CategoryTab(QWidget):
         super().__init__()
         self.db = db
         self.tree = CategoryTree(self._dropped)
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["分類", "紀錄", "進度"])
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["分類", "優先", "紀錄", "進度"])
         self.tree.setItemDelegateForColumn(PROGRESS_COL, ProgressDelegate(self.tree))
         self.tree.setDragDropMode(QAbstractItemView.InternalMove)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(NAME_COL, QHeaderView.Stretch)
+        self.tree.setColumnWidth(PRIORITY_COL, 50)
         self.tree.setColumnWidth(COUNT_COL, 60)
         self.tree.setColumnWidth(PROGRESS_COL, 170)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
@@ -99,11 +123,11 @@ class CategoryTab(QWidget):
         row.addWidget(self.tree, 1)
         row.addLayout(_side_buttons(
             ("新增分類…", self.add), ("新增子分類…", self.add_child), ("改名…", self.rename),
-            ("設定進度…", self.edit_progress), ("移動到…", self.move_to), ("上移", lambda: self.move(-1)),
+            ("設定優先度…", self.edit_priority), ("設定進度…", self.edit_progress), ("移動到…", self.move_to), ("上移", lambda: self.move(-1)),
             ("下移", lambda: self.move(1)), ("刪除", self.delete)))
         layout = QVBoxLayout(self)
-        hint = QLabel("拖曳可以調整順序或放進別的分類底下；雙擊名稱改名、雙擊進度設定進度。"
-                      "回報與 PPT 會依這個順序排列。")
+        hint = QLabel("同一層先依優先度（1 最前）、再依手動順序排列；拖曳或上移／下移只在相同優先度之間調整，"
+                      "也可以放進別的分類底下。雙擊名稱改名、雙擊優先或進度修改。回報與 PPT 會依這個順序排列。")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         layout.addLayout(row)
@@ -116,8 +140,9 @@ class CategoryTab(QWidget):
         items = {}
         for node in self.db.category_tree():
             parent = items.get(node.parent_id)
-            item = QTreeWidgetItem([node.name, str(self.db.category_usage(node.id)), ""])
+            item = QTreeWidgetItem([node.name, "", str(self.db.category_usage(node.id)), ""])
             item.setData(NAME_COL, Qt.UserRole, node.id)
+            show_priority(item, PRIORITY_COL, node.priority)
             item.setData(PROGRESS_COL, PROGRESS_ROLE, node.progress)
             item.setData(PROGRESS_COL, SETTABLE_ROLE, True)
             item.setTextAlignment(COUNT_COL, Qt.AlignCenter)
@@ -156,6 +181,8 @@ class CategoryTab(QWidget):
     def _double_clicked(self, _item, column):
         if column == PROGRESS_COL:
             self.edit_progress()
+        elif column == PRIORITY_COL:
+            self.edit_priority()
         else:
             self.rename()
 
@@ -195,6 +222,16 @@ class CategoryTab(QWidget):
             except ValueError as e:
                 self._warn("分類改名", e)
 
+    def edit_priority(self):
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        value = ask_category_priority(self, item.text(NAME_COL), item.data(PRIORITY_COL, PRIORITY_ROLE))
+        if value is not None:
+            cid = self._item_id(item)
+            self.db.set_category_priority(cid, value)
+            self.reload(cid)
+
     def edit_progress(self):
         item = self.tree.currentItem()
         if item is None:
@@ -226,6 +263,10 @@ class CategoryTab(QWidget):
         siblings = self._siblings(item)
         row = siblings.index(item)
         if not 0 <= row + step < len(siblings):
+            return
+        if siblings[row + step].data(PRIORITY_COL, PRIORITY_ROLE) != item.data(PRIORITY_COL, PRIORITY_ROLE):
+            QMessageBox.information(self, "調整順序", "上移／下移只在相同優先度的分類之間調整；"
+                                                  "要排到不同優先度的分類前後，請修改優先度。")
             return
         ids = [self._item_id(i) for i in siblings]
         ids.insert(row + step, ids.pop(row))

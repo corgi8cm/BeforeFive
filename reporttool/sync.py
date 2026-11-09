@@ -9,7 +9,7 @@ bundle 是一個 zip（或同樣結構的資料夾）：
 
 版本：
     1  分類只有一層，以名稱辨識；紀錄的 category 是分類名稱
-    2  分類是樹狀（uuid、parent、progress）；紀錄的 category 是分類 uuid
+    2  分類是樹狀（uuid、parent、progress、priority）；紀錄的 category 是分類 uuid
 匯入第 1 版時會做和資料庫升級相同的轉換（第一個 tag 變成子分類）。
 """
 import json
@@ -71,6 +71,7 @@ def _category_record(db: Database, row) -> dict:
         "name": row["name"],
         "position": row["position"],
         "progress": row["progress"],
+        "priority": row["priority"],
         "updated_at": row["updated_at"],
         "deleted_at": row["deleted_at"],
     }
@@ -123,6 +124,8 @@ def validate(data: dict):
             progress = c.get("progress")
             _require(progress is None or (isinstance(progress, int) and not isinstance(progress, bool)
                                           and 0 <= progress <= 100), f"分類「{c['name']}」的進度不正確")
+            priority = c.get("priority", DEFAULT_PRIORITY)
+            _require(priority in PRIORITIES and not isinstance(priority, bool), f"分類「{c['name']}」的優先度不正確")
         _require(isinstance(c.get("position"), int), f"分類「{c['name']}」的 position 格式錯誤")
         _require(_TIME.match(c.get("updated_at") or ""), f"分類「{c['name']}」的 updated_at 格式錯誤")
         _require(c.get("deleted_at") is None or _TIME.match(c["deleted_at"]), "分類 deleted_at 格式錯誤")
@@ -195,8 +198,9 @@ def _incoming_order(categories: list[dict]) -> list[dict]:
 def _merge_categories(db: Database, categories: list[dict], stats: dict) -> dict[str, int]:
     """合併第 2 版的分類，回傳 {對方的 uuid: 本機 id}。"""
     mapping: dict[str, int] = {}
-    keys = ("parent", "name", "position", "progress", "updated_at", "deleted_at")
+    keys = ("parent", "name", "position", "progress", "priority", "updated_at", "deleted_at")
     for c in _incoming_order(categories):
+        c = {**c, "priority": c.get("priority", DEFAULT_PRIORITY)}  # 較早的 2.0 備份沒有分類優先度
         parent_id = None
         if c.get("parent"):
             parent_id = mapping.get(c["parent"])
@@ -216,17 +220,18 @@ def _merge_categories(db: Database, categories: list[dict], stats: dict) -> dict
             if parent_id is not None and parent_id in db.category_subtree(row["id"]):
                 parent_id = row["parent_id"]  # 會形成循環時保留本機的上層
             db.conn.execute(
-                "UPDATE categories SET parent_id=?, name=?, position=?, progress=?, updated_at=? WHERE id=?",
-                (parent_id, c["name"], c["position"], c.get("progress"), c["updated_at"], row["id"]))
+                "UPDATE categories SET parent_id=?, name=?, position=?, progress=?, priority=?, updated_at=?"
+                " WHERE id=?",
+                (parent_id, c["name"], c["position"], c.get("progress"), c["priority"], c["updated_at"], row["id"]))
             if c.get("deleted_at") and row["deleted_at"] is None:
                 _apply_remote_delete(db, row["id"], c["updated_at"], c["deleted_at"])
             elif not c.get("deleted_at"):
                 db.conn.execute("UPDATE categories SET deleted_at=NULL WHERE id=?", (row["id"],))
         else:
             mapping[c["uuid"]] = db.conn.execute(
-                "INSERT INTO categories (uuid, parent_id, name, position, progress, updated_at, deleted_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (c["uuid"], parent_id, c["name"], c["position"], c.get("progress"), c["updated_at"],
+                "INSERT INTO categories (uuid, parent_id, name, position, progress, priority, updated_at, deleted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (c["uuid"], parent_id, c["name"], c["position"], c.get("progress"), c["priority"], c["updated_at"],
                  c.get("deleted_at"))).lastrowid
         stats["categories"] += 1
     return mapping

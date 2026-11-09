@@ -94,7 +94,7 @@ def sidebar_rows(win):
     rows = []
 
     def walk(item, depth):
-        rows.append(("  " * depth + item.text(0), item.text(1), item.data(2, PROGRESS_ROLE)))
+        rows.append(("  " * depth + item.text(mw.SIDE_NAME), item.text(mw.SIDE_COUNT), item.data(mw.SIDE_PROGRESS, PROGRESS_ROLE)))
         for i in range(item.childCount()):
             walk(item.child(i), depth + 1)
     for i in range(win.sidebar.topLevelItemCount()):
@@ -176,3 +176,15 @@ def test_delete_category_from_sidebar(win, monkeypatch):
     assert "開發 › 專案A" not in labels and "開發 › 專案A › 登入頁" not in labels
     assert win.selected_category() == win.ids["開發"]  # 刪除後選到上一層
     assert sidebar_rows(win)[1] == ("開發", "4", None)  # 紀錄移到上一層
+
+
+def test_set_category_priority_from_sidebar(win):
+    win.select_category(win.ids["會議"])
+    win.set_category_priority(1)  # 右鍵選單「優先度」
+    rows = sidebar_rows(win)
+    assert rows[1][0] == "會議" and rows[2][0] == "開發"
+    assert win.selected_category() == win.ids["會議"]
+    item = win.sidebar.topLevelItem(1)
+    assert item.text(mw.SIDE_PRIORITY) == "1"
+    win.select_category("all")
+    assert tree_outline(win)[0][0] == "會議（1）"  # 右邊分組也照優先度

@@ -29,7 +29,7 @@ LEGACY_STATUSES = {"blocked": "todo"}  # 舊版的「卡住」改成「待辦」
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
 DEFAULT_PRIORITY = 3
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CATEGORY_SEP = " › "
 CATEGORY_NAMESPACE = uuid.UUID("7d4f2a3e-5b1c-4e8a-9f60-2c3d4e5f6a7b")
 
@@ -102,6 +102,7 @@ class Category:
     position: int
     progress: int | None  # 0~100，None 表示沒有設定進度
     path: list[str]
+    priority: int = DEFAULT_PRIORITY  # 1~5，同一層先依優先度、再依 position 排列
 
     @property
     def depth(self) -> int:
@@ -204,7 +205,8 @@ class Database:
         """依 PRAGMA user_version 逐步升級。每一步都會先檢查欄位，重複執行也安全。"""
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
-                 4: self._migrate_v4, 5: self._migrate_v5, 6: self._migrate_v6}
+                 4: self._migrate_v4, 5: self._migrate_v5, 6: self._migrate_v6,
+                 7: self._migrate_v7}
         has_entries = self.conn.execute("SELECT 1 FROM entries LIMIT 1").fetchone() is not None
         if version < 6 and has_entries:  # 分類改成樹狀是較大的改動，升級前先留一份備份
             self.conn.commit()
@@ -279,6 +281,12 @@ class Database:
             self.conn.execute("ALTER TABLE categories_v6 RENAME TO categories")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id)")
         convert_first_tags(self)
+
+    def _migrate_v7(self):
+        """分類優先度（1~5，1 最優先）。"""
+        if "priority" not in self._columns("categories"):
+            self.conn.execute(
+                f"ALTER TABLE categories ADD COLUMN priority INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}")
 
     @property
     def device_id(self) -> str:
@@ -500,8 +508,9 @@ class Database:
         return CATEGORY_SEP.join(self.category_path(category_id))
 
     def category_tree(self) -> list[Category]:
-        """所有分類，依樹狀順序（先父後子，同層照 position）排成一列。上層已刪除的節點當作第一層。"""
-        rows = self.conn.execute(f"SELECT * FROM categories WHERE {LIVE} ORDER BY position, id").fetchall()
+        """所有分類，依樹狀順序（先父後子；同層先依優先度，再照 position）排成一列。上層已刪除的節點當作第一層。"""
+        rows = self.conn.execute(
+            f"SELECT * FROM categories WHERE {LIVE} ORDER BY priority, position, id").fetchall()
         ids = {r["id"] for r in rows}
         children: dict[int | None, list] = {}
         for r in rows:
@@ -512,7 +521,7 @@ class Database:
             for r in children.get(parent_id, []):
                 node_path = path + [r["name"]]
                 result.append(Category(r["id"], r["uuid"], r["parent_id"] if r["parent_id"] in ids else None,
-                                       r["name"], r["position"], r["progress"], node_path))
+                                       r["name"], r["position"], r["progress"], node_path, r["priority"]))
                 if len(node_path) < 50:
                     walk(r["id"], node_path)
 
@@ -637,6 +646,14 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE categories SET progress=?, updated_at=? WHERE id=? AND progress IS NOT ?",
                               (progress, utc_now(), category_id, progress))
+
+    def set_category_priority(self, category_id: int, priority: int):
+        """設定優先度 1~5（1 最優先）；同一層的分類先依優先度、再依手動順序排列。"""
+        if isinstance(priority, bool) or priority not in PRIORITIES:
+            raise ValueError("優先度要是 1～5")
+        with self.conn:
+            self.conn.execute("UPDATE categories SET priority=?, updated_at=? WHERE id=? AND priority<>?",
+                              (priority, utc_now(), category_id, priority))
 
     # ---- 帶入未完成項目 ----
 

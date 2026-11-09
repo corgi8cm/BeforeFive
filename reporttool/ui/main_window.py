@@ -21,7 +21,9 @@ from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
 from .entry_dialog import STATUS_COLORS, EntryDialog
-from .manage_dialog import ManageDialog, ProgressDialog, delete_category_with_confirm
+from .manage_dialog import (
+    PRIORITY_CHOICES, ManageDialog, ProgressDialog, ask_category_priority, delete_category_with_confirm, show_priority,
+)
 from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
 
@@ -32,7 +34,7 @@ GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展
 SIDEBAR_KEY = Qt.UserRole + 2
 PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}
 CATEGORY_COL, CONTENT_COL = 3, 5
-SIDE_NAME, SIDE_COUNT, SIDE_PROGRESS = 0, 1, 2
+SIDE_NAME, SIDE_PRIORITY, SIDE_COUNT, SIDE_PROGRESS = 0, 1, 2, 3
 
 
 def sort_entries(entries: list[Entry]) -> list[Entry]:
@@ -115,7 +117,7 @@ class MainWindow(QMainWindow):
         self.progress_box.toggled.connect(self._toggle_progress)
         top.addWidget(self.progress_box)
         top.addStretch()
-        top.addWidget(button("＋ 新增紀錄", self.new_entry, f"全域快捷鍵：{settings.hotkey}"))
+        top.addWidget(button("＋ 新增紀錄", lambda: self.new_entry(),f"全域快捷鍵：{settings.hotkey}"))
         top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中未完成（不是完成或取消）的項目帶進這一天"))
         self.review_btn = button("📋 工作回顧", self.review, "產生 report_日期 資料夾並開啟")
         self.review_btn.setStyleSheet("font-weight:bold; padding:4px 12px;")
@@ -125,7 +127,7 @@ class MainWindow(QMainWindow):
 
         # 左邊：分類樹（點選後右邊只顯示這個分類與子分類的紀錄）
         self.sidebar = QTreeWidget()
-        self.sidebar.setHeaderLabels(["分類", "筆", "進度"])
+        self.sidebar.setHeaderLabels(["分類", "優", "筆", "進度"])
         self.sidebar.setIndentation(14)
         self.sidebar.setMinimumWidth(260)
         self.sidebar.setItemDelegateForColumn(SIDE_PROGRESS, ProgressDelegate(self.sidebar))
@@ -133,6 +135,7 @@ class MainWindow(QMainWindow):
         side_header = self.sidebar.header()
         side_header.setStretchLastSection(False)
         side_header.setSectionResizeMode(SIDE_NAME, QHeaderView.Stretch)
+        self.sidebar.setColumnWidth(SIDE_PRIORITY, 30)
         self.sidebar.setColumnWidth(SIDE_COUNT, 34)
         self.sidebar.setColumnWidth(SIDE_PROGRESS, 112)
         self.sidebar.currentItemChanged.connect(lambda *_: self.refresh())
@@ -228,6 +231,7 @@ class MainWindow(QMainWindow):
         for node in self._nodes:
             item = QTreeWidgetItem([node.name])
             item.setData(SIDE_NAME, SIDEBAR_KEY, node.id)
+            show_priority(item, SIDE_PRIORITY, node.priority)
             item.setData(SIDE_PROGRESS, PROGRESS_ROLE, node.progress)
             item.setData(SIDE_PROGRESS, SETTABLE_ROLE, True)
             item.setToolTip(SIDE_NAME, node.label)
@@ -294,6 +298,8 @@ class MainWindow(QMainWindow):
     def _sidebar_double_clicked(self, item, column):
         if column == SIDE_PROGRESS:
             self.edit_category_progress()
+        elif column == SIDE_PRIORITY:
+            self.edit_category_priority()
 
     def _sidebar_menu(self, pos):
         item = self.sidebar.itemAt(pos)
@@ -301,6 +307,14 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         if isinstance(key, int):
             self.sidebar.setCurrentItem(item)
+            menu.addAction("新增紀錄…", lambda: self.new_entry(key))
+            menu.addSeparator()
+            priority_menu = menu.addMenu("優先度")
+            current = next((n.priority for n in self._nodes if n.id == key), None)
+            for p, text in PRIORITY_CHOICES.items():
+                action = priority_menu.addAction(text, lambda p=p: self.set_category_priority(p))
+                action.setCheckable(True)
+                action.setChecked(p == current)
             if self.progress_box.isChecked():
                 menu.addAction("設定進度…", self.edit_category_progress)
             menu.addAction("新增子分類…", self.add_child_category)
@@ -308,6 +322,23 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
         menu.addAction("管理分類與標籤…", self.manage)
         menu.exec(self.sidebar.viewport().mapToGlobal(pos))
+
+    def _selected_node(self):
+        key = self.selected_category()
+        return next((n for n in self._nodes if n.id == key), None)
+
+    def set_category_priority(self, priority: int):
+        node = self._selected_node()
+        if node is not None:
+            self.db.set_category_priority(node.id, priority)
+            self.reload_categories()
+
+    def edit_category_priority(self):
+        node = self._selected_node()
+        if node is not None:
+            value = ask_category_priority(self, node.name, node.priority)
+            if value is not None:
+                self.set_category_priority(value)
 
     def edit_category_progress(self):
         key = self.selected_category()
@@ -519,8 +550,9 @@ class MainWindow(QMainWindow):
             dlg.show()
         bring_to_front(dlg)
 
-    def new_entry(self):
-        dlg = EntryDialog(self.db, self.current_date, parent=self)
+    def new_entry(self, category_id: int | None = None):
+        """category_id：從分類樹右鍵新增時，直接放在那個分類。"""
+        dlg = EntryDialog(self.db, self.current_date, parent=self, category_id=category_id)
         if dlg.exec():
             self.refresh()
 

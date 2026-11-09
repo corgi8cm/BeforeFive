@@ -187,12 +187,14 @@ class EntryDialog(QDialog):
     saved = Signal(int)
 
     def __init__(self, db: Database, entry_date: str, entry: Entry | None = None, parent=None,
-                 follow_up_of: Entry | None = None):
-        """entry：編輯既有紀錄；follow_up_of：替這筆工作追加一筆新進度（會串成同一件工作的歷程）。"""
+                 follow_up_of: Entry | None = None, category_id: int | None = None):
+        """entry：編輯既有紀錄；follow_up_of：替這筆工作追加一筆新進度（會串成同一件工作的歷程）；
+        category_id：新紀錄直接放在這個分類（從左邊分類樹的右鍵選單新增）。"""
         super().__init__(parent)
         self.db = db
         self.entry = entry
         self.follow_up_of = follow_up_of
+        self.preset_category = category_id
         self.entry_date = entry.date if entry else entry_date
         if entry:
             title = "編輯紀錄"
@@ -327,7 +329,9 @@ class EntryDialog(QDialog):
                 btn.setChecked(btn.property("status") == status)
             self.time_edit.setTime(QTime.currentTime())
             self._set_priority(self.follow_up_of.priority if self.follow_up_of else DEFAULT_PRIORITY)
-            if source:
+            if self.preset_category is not None:  # 指定了分類：不沿用上一筆（其他分類）的 tag
+                self._set_category(self.preset_category)
+            elif source:
                 self._set_category(source.category_id)
                 self.tag_edit.set_tags(source.tags)
             if self.follow_up_of:  # 同一件工作沿用標題

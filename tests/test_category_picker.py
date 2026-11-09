@@ -100,3 +100,15 @@ def test_entry_dialog_saves_and_reuses_category(qapp, db):
     db.save_entry(Entry(None, DATE, "10:00", "另一件", "doing", category_id=ids(db)["支援 › 專案A"]))
     follow = EntryDialog(db, DATE, follow_up_of=saved)
     assert follow.category_picker.category_id() == login
+
+
+def test_entry_dialog_with_preset_category(qapp, db):
+    """從左邊分類樹右鍵「新增紀錄…」：直接放在那個分類，不沿用上一筆其他分類的 tag。"""
+    db.save_entry(Entry(None, DATE, "09:00", "上一筆", "doing", ["別的"], category_id=ids(db)["支援 › 專案A"]))
+    login = ids(db)["開發 › 專案A › 登入頁"]
+    dlg = EntryDialog(db, DATE, category_id=login)
+    assert dlg.category_picker.category_id() == login
+    assert dlg.tag_edit.tags() == []
+    dlg.text.setPlainText("新的")
+    dlg.save()
+    assert {e.text: e.category_id for e in db.entries_for_date(DATE)}["新的"] == login

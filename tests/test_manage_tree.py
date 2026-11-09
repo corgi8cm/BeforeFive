@@ -136,3 +136,19 @@ def test_delete_subtree(tab):
 def test_manage_dialog_opens(qapp, tmp_path):
     dlg = manage_dialog.ManageDialog(Database(tmp_path))
     assert dlg.findChild(CategoryTab) is not None
+
+
+def test_set_priority_reorders_and_limits_move(tab, monkeypatch):
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _p, _t, text: infos.append(text))
+    monkeypatch.setattr(QInputDialog, "getItem", lambda _p, _t, _l, items, *a, **k: (items[0], True))  # 1（最優先）
+    select(tab, "行政")
+    tab.edit_priority()
+    assert shape(tab)[:2] == ["行政", "開發"]
+    assert tab.tree.currentItem().text(manage_dialog.PRIORITY_COL) == "1"
+
+    tab.move(1)  # 下一個是優先度 3 的「開發」：不能用上移／下移跨過
+    assert shape(tab)[:2] == ["行政", "開發"] and infos
+    select(tab, "會議")
+    tab.move(-1)  # 相同優先度之間照常調整
+    assert shape(tab)[:3] == ["行政", "會議", "開發"]

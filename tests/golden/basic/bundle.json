@@ -10,6 +10,7 @@
    "name": "開發",
    "position": 0,
    "progress": 60,
+   "priority": 3,
    "updated_at": "2026-10-01T00:00:00.000Z",
    "deleted_at": null
   },
@@ -19,6 +20,7 @@
    "name": "會議",
    "position": 1,
    "progress": null,
+   "priority": 3,
    "updated_at": "2026-10-01T00:00:00.000Z",
    "deleted_at": null
   },
@@ -28,6 +30,7 @@
    "name": "支援",
    "position": 2,
    "progress": null,
+   "priority": 1,
    "updated_at": "2026-10-01T00:00:00.000Z",
    "deleted_at": null
   },
@@ -37,6 +40,7 @@
    "name": "行政",
    "position": 3,
    "progress": null,
+   "priority": 3,
    "updated_at": "2026-10-01T00:00:00.000Z",
    "deleted_at": null
   },
@@ -46,6 +50,7 @@
    "name": "其他",
    "position": 4,
    "progress": null,
+   "priority": 3,
    "updated_at": "2026-10-01T00:00:00.000Z",
    "deleted_at": null
   },
@@ -55,6 +60,7 @@
    "name": "舊分類",
    "position": 5,
    "progress": null,
+   "priority": 3,
    "updated_at": "2026-10-15T03:00:00.000Z",
    "deleted_at": "2026-10-15T03:00:00.000Z"
   },
@@ -64,6 +70,7 @@
    "name": "專案A",
    "position": 0,
    "progress": 40,
+   "priority": 3,
    "updated_at": "2026-10-30T08:00:00.000Z",
    "deleted_at": null
   },
@@ -73,6 +80,7 @@
    "name": "客戶X",
    "position": 0,
    "progress": null,
+   "priority": 3,
    "updated_at": "2026-11-02T06:05:00.000Z",
    "deleted_at": null
   }

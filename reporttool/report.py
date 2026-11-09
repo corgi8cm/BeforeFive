@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image as PILImage, ImageOps
 
 from .changes import EntryChange, change_for, format_change_lines
-from .db import STATUS_LABELS, Database, Entry
+from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]+')
 _GENERATED_FILE = re.compile(r"^\d{2,}_.+\.(png|jpg)$", re.IGNORECASE)
@@ -67,8 +67,10 @@ def image_definitions(definitions: list[str]) -> str:
     return "\n" + "\n".join(definitions) + "\n" if definitions else ""
 
 
-def category_progress_lines(db: Database, entries: list[Entry]) -> list[str]:
-    """紀錄用到的分類（含上層）中有設定進度的，依分類樹的順序，例如「- 開發 › 專案A：40%」。"""
+def category_info_lines(db: Database, entries: list[Entry]) -> list[str]:
+    """紀錄用到的分類（含上層），依分類樹的順序（同層已依優先度排好）。
+
+    有設定的才寫：優先度不是預設 3 時寫「優先N」，有進度時寫「進度 N%」，例如「- 開發 › 專案A：優先1、進度 40%」。"""
     nodes = db.category_tree()
     parents = {n.id: n.parent_id for n in nodes}
     used = set()
@@ -77,21 +79,28 @@ def category_progress_lines(db: Database, entries: list[Entry]) -> list[str]:
         while cid is not None and cid not in used:
             used.add(cid)
             cid = parents.get(cid)
-    return [f"- {n.label}：{n.progress}%" for n in nodes if n.id in used and n.progress is not None]
+    lines = []
+    for n in nodes:
+        if n.id not in used:
+            continue
+        info = ([f"優先{n.priority}"] if n.priority != DEFAULT_PRIORITY else []) + \
+               ([f"進度 {n.progress}%"] if n.progress is not None else [])
+        lines.append(f"- {n.label}" + ("：" + "、".join(info) if info else ""))
+    return lines
 
 
-def progress_section(progress_lines: list[str]) -> str:
-    return "\n## 分類進度\n" + "\n".join(progress_lines) + "\n" if progress_lines else ""
+def category_section(category_lines: list[str]) -> str:
+    return "\n## 分類資訊\n" + "\n".join(category_lines) + "\n" if category_lines else ""
 
 
 def build_markdown(date: str, instructions: str, entry_lines: list[str], definitions: list[str] = (),
-                   progress_lines: list[str] = ()) -> str:
+                   category_lines: list[str] = ()) -> str:
     records = "\n".join(entry_lines) if entry_lines else "（今天沒有紀錄）"
     return (
         f"# 工作回報整理請求（{date}）\n\n"
         f"## 指示\n{instructions.strip()}\n\n"
         f"## 今日工作紀錄\n{records}\n"
-        + progress_section(list(progress_lines))
+        + category_section(list(category_lines))
         + image_definitions(list(definitions))
     )
 
@@ -172,7 +181,7 @@ def generate_report(db: Database, date: str, output_root, instructions: str, max
     entries = db.entries_for_date(date)
     written, definitions = _write_entries(db, entries, folder, max_side)
     md = build_markdown(date, instructions, [line for _, line in written], definitions,
-                        category_progress_lines(db, entries))
+                        category_info_lines(db, entries))
     (folder / "report.md").write_text(md, encoding="utf-8")
     return folder
 
@@ -186,7 +195,7 @@ def date_heading(date: str) -> str:
 
 
 def build_range_markdown(start: str, end: str, instructions: str, entry_lines: list[tuple[str, str]],
-                         definitions: list[str] = (), progress_lines: list[str] = ()) -> str:
+                         definitions: list[str] = (), category_lines: list[str] = ()) -> str:
     """entry_lines：依時間排序的（日期, 紀錄那一行）。每天一個小標題，沒有紀錄的日子不列出。"""
     days: dict[str, list[str]] = {}
     for date, line in entry_lines:
@@ -199,7 +208,7 @@ def build_range_markdown(start: str, end: str, instructions: str, entry_lines: l
         f"# 工作回報整理請求（{start} ~ {end}）\n\n"
         f"## 指示\n{instructions.strip()}\n\n"
         f"## 期間工作紀錄（共 {len(entry_lines)} 筆，{len(days)} 天）\n{records}\n"
-        + progress_section(list(progress_lines))
+        + category_section(list(category_lines))
         + image_definitions(list(definitions))
     )
 
@@ -217,6 +226,6 @@ def generate_range_report(db: Database, start: str, end: str, output_root, instr
     entries = db.entries_between(start, end)
     written, definitions = _write_entries(db, entries, folder, max_side)
     md = build_range_markdown(start, end, instructions, [(e.date, line) for e, line in written], definitions,
-                              category_progress_lines(db, entries))
+                              category_info_lines(db, entries))
     (folder / "report.md").write_text(md, encoding="utf-8")
     return folder
