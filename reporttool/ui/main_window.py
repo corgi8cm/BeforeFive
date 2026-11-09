@@ -21,7 +21,7 @@ from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
 from .entry_dialog import STATUS_COLORS, EntryDialog
-from .manage_dialog import ManageDialog, ProgressDialog
+from .manage_dialog import ManageDialog, ProgressDialog, delete_category_with_confirm
 from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
 
@@ -304,6 +304,7 @@ class MainWindow(QMainWindow):
             if self.progress_box.isChecked():
                 menu.addAction("設定進度…", self.edit_category_progress)
             menu.addAction("新增子分類…", self.add_child_category)
+            menu.addAction("刪除分類…", self.delete_category)
             menu.addSeparator()
         menu.addAction("管理分類與標籤…", self.manage)
         menu.exec(self.sidebar.viewport().mapToGlobal(pos))
@@ -317,6 +318,16 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             self.db.set_category_progress(node.id, dlg.value())
             self.reload_categories()
+
+    def delete_category(self):
+        """刪除選取的分類（子分類一起刪，紀錄移到上一層），刪除後選到上一層。"""
+        key = self.selected_category()
+        node = next((n for n in self._nodes if n.id == key), None)
+        if node is None:
+            return
+        if delete_category_with_confirm(self, self.db, node.id, node.label):
+            self.reload_categories()
+            self.select_category(node.parent_id if node.parent_id is not None else ALL)
 
     def add_child_category(self):
         key = self.selected_category()

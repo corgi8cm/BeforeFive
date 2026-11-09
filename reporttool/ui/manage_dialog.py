@@ -246,19 +246,24 @@ class CategoryTab(QWidget):
 
     def delete(self):
         cid, name = self._current()
-        if cid is None:
-            return
-        subtree = self.db.category_subtree(cid)
-        used = sum(self.db.category_usage(i) for i in subtree)
-        notes = []
-        if len(subtree) > 1:
-            notes.append(f"底下的 {len(subtree) - 1} 個子分類會一起刪除。")
-        if used:
-            notes.append(f"有 {used} 筆紀錄使用這些分類，刪除後會移到上一層。")
-        note = "\n\n" + "\n".join(notes) if notes else ""
-        if QMessageBox.question(self, "刪除分類", f"確定刪除分類「{name}」？{note}") == QMessageBox.Yes:
-            self.db.delete_category(cid)
+        if cid is not None and delete_category_with_confirm(self, self.db, cid, name):
             self.reload()
+
+
+def delete_category_with_confirm(parent, db: Database, cid: int, name: str) -> bool:
+    """說明會影響多少子分類與紀錄，確認後刪除（子分類一起刪，紀錄移到上一層）。回傳是否刪除。"""
+    subtree = db.category_subtree(cid)
+    used = sum(db.category_usage(i) for i in subtree)
+    notes = []
+    if len(subtree) > 1:
+        notes.append(f"底下的 {len(subtree) - 1} 個子分類會一起刪除。")
+    if used:
+        notes.append(f"有 {used} 筆紀錄使用這些分類，刪除後會移到上一層。")
+    note = "\n\n" + "\n".join(notes) if notes else ""
+    if QMessageBox.question(parent, "刪除分類", f"確定刪除分類「{name}」？{note}") != QMessageBox.Yes:
+        return False
+    db.delete_category(cid)
+    return True
 
 
 class TagTab(QWidget):

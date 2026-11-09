@@ -162,3 +162,17 @@ def test_show_progress_toggle_is_remembered(win, tmp_path):
     assert not win.sidebar.isColumnHidden(mw.SIDE_PROGRESS)
     assert tree_outline(win)[0][1][1][0] == "專案A（3）　進度 40%"
     assert load_settings(tmp_path / "config").show_progress is True
+
+
+def test_delete_category_from_sidebar(win, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda parent, title, text, *a: asked.append(text) or QMessageBox.Yes)
+    win.select_category(win.ids["開發 › 專案A"])
+    win.delete_category()  # 右鍵選單的「刪除分類…」
+    assert "1 個子分類" in asked[0] and "3 筆紀錄" in asked[0]
+    labels = [label for _, label in win.db.categories()]
+    assert "開發 › 專案A" not in labels and "開發 › 專案A › 登入頁" not in labels
+    assert win.selected_category() == win.ids["開發"]  # 刪除後選到上一層
+    assert sidebar_rows(win)[1] == ("開發", "4", None)  # 紀錄移到上一層
