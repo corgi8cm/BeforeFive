@@ -119,8 +119,11 @@ def test_set_progress_from_sidebar(win, monkeypatch):
         return QDialog.Accepted
 
     monkeypatch.setattr(ProgressDialog, "exec", fake_exec)
+    win.select_category("all")
+    assert not win.progress_btn.isEnabled()  # 「全部」不是分類，不能設定進度
     win.select_category(win.ids["開發"])
-    win.edit_category_progress()
+    assert win.progress_btn.isEnabled() and win.child_btn.isEnabled()
+    win.progress_btn.click()  # 分類樹下方的按鈕
     assert ("開發", "4", 90) in sidebar_rows(win)
     assert win.selected_category() == win.ids["開發"]  # 重建後仍選在同一個分類
     assert tree_outline(win)[0] == "整理筆記"

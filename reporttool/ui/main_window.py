@@ -22,7 +22,7 @@ from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import ManageDialog, ProgressDialog
-from .progress_delegate import PROGRESS_ROLE, ProgressDelegate
+from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
 
 ALL, UNCATEGORIZED = "all", "none"
@@ -153,8 +153,22 @@ class MainWindow(QMainWindow):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(CONTENT_COL, QHeaderView.Stretch)
 
+        # 分類樹下方的按鈕：選到分類時才能用
+        self.progress_btn = button("設定進度…", self.edit_category_progress, "設定選取分類的進度（0～100%）")
+        self.child_btn = button("新增子分類…", self.add_child_category, "在選取的分類底下新增子分類")
+        side_buttons = QHBoxLayout()
+        side_buttons.setContentsMargins(0, 0, 0, 0)
+        side_buttons.addWidget(self.progress_btn)
+        side_buttons.addWidget(self.child_btn)
+        side_buttons.addStretch()
+        side_panel = QWidget()
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.addWidget(self.sidebar, 1)
+        side_layout.addLayout(side_buttons)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.sidebar)
+        splitter.addWidget(side_panel)
         splitter.addWidget(self.tree)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([380, 820])
@@ -209,8 +223,9 @@ class MainWindow(QMainWindow):
             item = QTreeWidgetItem([node.name])
             item.setData(SIDE_NAME, SIDEBAR_KEY, node.id)
             item.setData(SIDE_PROGRESS, PROGRESS_ROLE, node.progress)
+            item.setData(SIDE_PROGRESS, SETTABLE_ROLE, True)
             item.setToolTip(SIDE_NAME, node.label)
-            item.setToolTip(SIDE_PROGRESS, "雙擊設定進度")
+            item.setToolTip(SIDE_PROGRESS, "雙擊設定進度，或在分類上按右鍵")
             parent = items.get(node.parent_id)
             if parent is not None and node.parent_id is not None:
                 parent.addChild(item)
@@ -376,6 +391,9 @@ class MainWindow(QMainWindow):
         day_entries = self.db.entries_for_date(self.current_date)
         self._update_sidebar_counts(day_entries)
         key = self.selected_category()
+        is_category = isinstance(key, int)
+        self.progress_btn.setEnabled(is_category)
+        self.child_btn.setEnabled(is_category)
         entries = [e for e in day_entries if self._visible(e, key)]
         grouped = self.group_box.isChecked() and key != UNCATEGORIZED
         self.tree.setRootIsDecorated(grouped)

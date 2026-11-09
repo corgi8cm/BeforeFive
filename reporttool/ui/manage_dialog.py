@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import Database
-from .progress_delegate import PROGRESS_ROLE, ProgressDelegate
+from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 
 
 def _side_buttons(*buttons) -> QVBoxLayout:
@@ -119,6 +119,7 @@ class CategoryTab(QWidget):
             item = QTreeWidgetItem([node.name, str(self.db.category_usage(node.id)), ""])
             item.setData(NAME_COL, Qt.UserRole, node.id)
             item.setData(PROGRESS_COL, PROGRESS_ROLE, node.progress)
+            item.setData(PROGRESS_COL, SETTABLE_ROLE, True)
             item.setTextAlignment(COUNT_COL, Qt.AlignCenter)
             item.setToolTip(PROGRESS_COL, "雙擊設定進度" if node.progress is None else f"進度 {node.progress}%")
             if parent:

@@ -4,10 +4,13 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
 PROGRESS_ROLE = Qt.UserRole + 10  # 0~100 的整數；None 表示沒有設定進度
+SETTABLE_ROLE = Qt.UserRole + 11  # True：這一列可以設定進度，沒設定時顯示提示文字
+PLACEHOLDER = "雙擊設定"
 TRACK = QColor("#e3e6ea")
 FILL = QColor("#2f6fd6")
 DONE = QColor("#2e9d5b")
 TEXT = QColor("#555555")
+HINT = QColor("#a0a4aa")
 
 
 def progress_color(value: int) -> QColor:
@@ -19,6 +22,11 @@ class ProgressDelegate(QStyledItemDelegate):
         value = index.data(PROGRESS_ROLE)
         if value is None:
             super().paint(painter, option, index)
+            if index.data(SETTABLE_ROLE):
+                painter.save()
+                painter.setPen(HINT)
+                painter.drawText(QRectF(option.rect).adjusted(6, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, PLACEHOLDER)
+                painter.restore()
             return
         # 先畫選取時的底色
         self.initStyleOption(option, index)
