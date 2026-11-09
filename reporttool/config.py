@@ -14,6 +14,7 @@ DEFAULT_SETTINGS = {
     "data_dir": "",  # 空白 = %LOCALAPPDATA%\ReportTool\data
     "output_dir": "",  # 空白 = 專案底下的 WorkReports
     "max_image_side": 1600,
+    "show_progress": True,  # 主視窗是否顯示分類進度（主視窗的「顯示進度」勾選框）
 }
 
 DEFAULT_INSTRUCTIONS = """\
@@ -62,6 +63,18 @@ class Settings:
     output_dir: Path
     max_image_side: int
     config_dir: Path
+    show_progress: bool = True
+
+    def save(self, key: str, value):
+        """把一個設定寫回 settings.json（其他內容不動），同時更新這個物件。"""
+        path = self.config_dir / "settings.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = dict(DEFAULT_SETTINGS)
+        raw[key] = value
+        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        setattr(self, key, value)
 
     @property
     def instructions_path(self) -> Path:
@@ -99,6 +112,7 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
         output_dir=Path(os.path.expandvars(raw["output_dir"])) if raw["output_dir"] else ROOT / "WorkReports",
         max_image_side=int(raw["max_image_side"]),
         config_dir=config_dir,
+        show_progress=bool(raw["show_progress"]),
     )
 
 

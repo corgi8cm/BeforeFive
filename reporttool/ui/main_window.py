@@ -109,6 +109,11 @@ class MainWindow(QMainWindow):
         self.group_box.setToolTip("照分類樹分組；同一層依優先順序、再依標題排列")
         self.group_box.toggled.connect(lambda _c: self.refresh())
         top.addWidget(self.group_box)
+        self.progress_box = QCheckBox("顯示進度")
+        self.progress_box.setChecked(settings.show_progress)
+        self.progress_box.setToolTip("在分類樹與分組標題顯示各分類的進度；關閉只是不顯示，已填的進度會保留")
+        self.progress_box.toggled.connect(self._toggle_progress)
+        top.addWidget(self.progress_box)
         top.addStretch()
         top.addWidget(button("＋ 新增紀錄", self.new_entry, f"全域快捷鍵：{settings.hotkey}"))
         top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中未完成（不是完成或取消）的項目帶進這一天"))
@@ -197,6 +202,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(bottom)
         self.setCentralWidget(central)
 
+        self._apply_progress_visibility()
         self.reload_categories()
 
     @property
@@ -274,6 +280,17 @@ class MainWindow(QMainWindow):
             it.value().setText(SIDE_COUNT, str(n) if n else "")
             it += 1
 
+    def _toggle_progress(self, checked: bool):
+        self.settings.save("show_progress", checked)
+        self._apply_progress_visibility()
+        self.refresh()
+
+    def _apply_progress_visibility(self):
+        """「顯示進度」關閉時，分類樹的進度欄、設定進度按鈕與分組標題的進度都不顯示。"""
+        on = self.progress_box.isChecked()
+        self.sidebar.setColumnHidden(SIDE_PROGRESS, not on)
+        self.progress_btn.setVisible(on)
+
     def _sidebar_double_clicked(self, item, column):
         if column == SIDE_PROGRESS:
             self.edit_category_progress()
@@ -284,7 +301,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         if isinstance(key, int):
             self.sidebar.setCurrentItem(item)
-            menu.addAction("設定進度…", self.edit_category_progress)
+            if self.progress_box.isChecked():
+                menu.addAction("設定進度…", self.edit_category_progress)
             menu.addAction("新增子分類…", self.add_child_category)
             menu.addSeparator()
         menu.addAction("管理分類與標籤…", self.manage)
@@ -366,7 +384,8 @@ class MainWindow(QMainWindow):
         return item
 
     def _group_item(self, parent, title: str, count: int, key, progress=None) -> QTreeWidgetItem:
-        text = f"{title}（{count}）" + (f"　進度 {progress}%" if progress is not None else "")
+        show = progress is not None and self.progress_box.isChecked()
+        text = f"{title}（{count}）" + (f"　進度 {progress}%" if show else "")
         item = QTreeWidgetItem([text])
         item.setFlags(Qt.ItemIsEnabled)  # 不能選取，避免被當成紀錄編輯或刪除
         font = QFont(item.font(0))

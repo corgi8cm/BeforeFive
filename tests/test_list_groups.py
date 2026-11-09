@@ -148,3 +148,17 @@ def test_outline_skips_empty_categories(tmp_path):
     nodes = db.category_tree()
     direct, groups = outline([], nodes)
     assert direct == [] and groups == []
+
+
+def test_show_progress_toggle_is_remembered(win, tmp_path):
+    win.progress_box.setChecked(False)  # 一次關掉所有進度顯示
+    assert win.sidebar.isColumnHidden(mw.SIDE_PROGRESS)
+    assert win.progress_btn.isHidden()
+    assert tree_outline(win)[0][1][1][0] == "專案A（3）"
+    assert win.db.category_tree()[1].progress == 40  # 只是不顯示，進度還在
+    assert load_settings(tmp_path / "config").show_progress is False  # 下次開啟仍是關閉
+
+    win.progress_box.setChecked(True)
+    assert not win.sidebar.isColumnHidden(mw.SIDE_PROGRESS)
+    assert tree_outline(win)[0][1][1][0] == "專案A（3）　進度 40%"
+    assert load_settings(tmp_path / "config").show_progress is True
