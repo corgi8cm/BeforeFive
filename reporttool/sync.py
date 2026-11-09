@@ -4,18 +4,27 @@ bundle 是一個 zip（或同樣結構的資料夾）：
     bundle.json          分類與紀錄
     images/<日期>/<檔名>  紀錄用到的圖片
 
-合併規則：以 uuid（紀錄）或名稱（分類）對應，updated_at 較新的那邊勝出；完全同時則刪除優先，再比內容。
+合併規則：紀錄與分類都以 uuid 對應，updated_at 較新的那邊勝出；完全同時則刪除優先，再比內容。
 之後手機與電腦的區網同步也用同一套 snapshot()／merge()。
+
+版本：
+    1  分類只有一層，以名稱辨識；紀錄的 category 是分類名稱
+    2  分類是樹狀（uuid、parent、progress、priority）；紀錄的 category 是分類 uuid
+匯入第 1 版時會做和資料庫升級相同的轉換（第一個 tag 變成子分類）。
 """
 import json
 import re
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from .db import DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, utc_now
+from .db import (
+    DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, category_uuid, convert_first_tags,
+    utc_now,
+)
 
 FORMAT = "reporttool-bundle"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 
 _TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -34,7 +43,7 @@ def _entry_record(db: Database, row) -> dict:
         "SELECT tag FROM entry_tags WHERE entry_id=? ORDER BY rowid", (row["id"],))]
     images = [{"path": r["path"], "original_name": r["original_name"], "include": bool(r["include"])}
               for r in db.conn.execute("SELECT * FROM images WHERE entry_id=? ORDER BY position", (row["id"],))]
-    category = db.conn.execute("SELECT name FROM categories WHERE id=?", (row["category_id"],)).fetchone()
+    category = db.conn.execute("SELECT uuid FROM categories WHERE id=?", (row["category_id"],)).fetchone()
     carried = db.conn.execute("SELECT uuid FROM entries WHERE id=?", (row["carried_from"],)).fetchone()
     return {
         "uuid": row["uuid"],
@@ -44,7 +53,7 @@ def _entry_record(db: Database, row) -> dict:
         "text": row["text"],
         "status": row["status"],
         "priority": row["priority"],
-        "category": category["name"] if category else None,
+        "category": category["uuid"] if category else None,
         "tags": tags,
         "images": images,
         "carried_from": carried["uuid"] if carried else None,
@@ -54,12 +63,23 @@ def _entry_record(db: Database, row) -> dict:
     }
 
 
+def _category_record(db: Database, row) -> dict:
+    parent = db.conn.execute("SELECT uuid FROM categories WHERE id=?", (row["parent_id"],)).fetchone()
+    return {
+        "uuid": row["uuid"],
+        "parent": parent["uuid"] if parent else None,
+        "name": row["name"],
+        "position": row["position"],
+        "progress": row["progress"],
+        "priority": row["priority"],
+        "updated_at": row["updated_at"],
+        "deleted_at": row["deleted_at"],
+    }
+
+
 def snapshot(db: Database) -> dict:
     """整個資料庫（含 tombstone）轉成 bundle.json 的內容。"""
-    categories = [
-        {"name": r["name"], "position": r["position"], "updated_at": r["updated_at"], "deleted_at": r["deleted_at"]}
-        for r in db.conn.execute("SELECT * FROM categories ORDER BY position, id")
-    ]
+    categories = [_category_record(db, r) for r in db.conn.execute("SELECT * FROM categories ORDER BY id")]
     entries = [_entry_record(db, row)
                for row in db.conn.execute("SELECT * FROM entries ORDER BY date, time, id").fetchall()]
     return {
@@ -95,9 +115,17 @@ def _require(cond, message):
 def validate(data: dict):
     """匯入前先整份檢查，有問題就整份不匯入。"""
     _require(isinstance(data, dict) and data.get("format") == FORMAT, "不是 ReportTool 的資料包")
-    _require(data.get("version") == FORMAT_VERSION, f"不支援的資料包版本：{data.get('version')}")
+    _require(data.get("version") in SUPPORTED_VERSIONS, f"不支援的資料包版本：{data.get('version')}")
     for c in data.get("categories", []):
         _require(isinstance(c.get("name"), str) and c["name"].strip(), "分類名稱是空的")
+        if data["version"] >= 2:
+            _require(isinstance(c.get("uuid"), str) and c["uuid"], f"分類「{c['name']}」缺少 uuid")
+            _require(c.get("parent") is None or isinstance(c["parent"], str), f"分類「{c['name']}」的 parent 格式錯誤")
+            progress = c.get("progress")
+            _require(progress is None or (isinstance(progress, int) and not isinstance(progress, bool)
+                                          and 0 <= progress <= 100), f"分類「{c['name']}」的進度不正確")
+            priority = c.get("priority", DEFAULT_PRIORITY)
+            _require(priority in PRIORITIES and not isinstance(priority, bool), f"分類「{c['name']}」的優先度不正確")
         _require(isinstance(c.get("position"), int), f"分類「{c['name']}」的 position 格式錯誤")
         _require(_TIME.match(c.get("updated_at") or ""), f"分類「{c['name']}」的 updated_at 格式錯誤")
         _require(c.get("deleted_at") is None or _TIME.match(c["deleted_at"]), "分類 deleted_at 格式錯誤")
@@ -115,6 +143,7 @@ def validate(data: dict):
                  f"紀錄 {name} 的時間戳記格式錯誤")
         _require(e.get("deleted_at") is None or _TIME.match(e["deleted_at"]), f"紀錄 {name} deleted_at 格式錯誤")
         _require(all(isinstance(t, str) and t for t in e.get("tags", [])), f"紀錄 {name} 的 tag 格式錯誤")
+        _require(e.get("category") is None or isinstance(e["category"], str), f"紀錄 {name} 的分類格式錯誤")
         for img in e.get("images", []):
             _require(_IMAGE_PATH.match(img.get("path") or ""), f"紀錄 {name} 的圖片路徑不合法：{img.get('path')}")
 
@@ -131,43 +160,134 @@ def _incoming_wins(local: dict, incoming: dict) -> bool:
                                                                                   ensure_ascii=False)
 
 
-def _category_id(db: Database, name: str | None, now: str) -> int | None:
-    """紀錄用到的分類；本機沒有就建立，本機已刪除則當作未分類。"""
+def _nearest_live(db: Database, category_id: int | None) -> int | None:
+    """這個分類；已刪除的話往上找第一個還在的分類，都刪了就是未分類。"""
+    seen = set()
+    while category_id is not None and category_id not in seen:
+        seen.add(category_id)
+        row = db.conn.execute("SELECT parent_id, deleted_at FROM categories WHERE id=?", (category_id,)).fetchone()
+        if row is None:
+            return None
+        if row["deleted_at"] is None:
+            return category_id
+        category_id = row["parent_id"]
+    return None
+
+
+def _apply_remote_delete(db: Database, category_id: int, updated_at: str, deleted_at: str):
+    """對方刪了這個分類：子分類一起刪除，紀錄移到還在的上層。不更新紀錄的 updated_at，以免蓋掉對方較新的紀錄。"""
+    subtree = db.category_subtree(category_id)
+    marks = ", ".join("?" * len(subtree))
+    db.conn.execute(f"UPDATE categories SET updated_at=?, deleted_at=? WHERE id IN ({marks}) AND {LIVE}",
+                    (updated_at, deleted_at, *subtree))
+    db.conn.execute(f"UPDATE entries SET category_id=? WHERE category_id IN ({marks})",
+                    (_nearest_live(db, category_id), *subtree))
+
+
+def _incoming_order(categories: list[dict]) -> list[dict]:
+    """先處理上層再處理子分類，同層維持原本順序。"""
+    by_uuid = {c["uuid"]: c for c in categories}
+
+    def depth(c, seen=()):
+        parent = by_uuid.get(c.get("parent"))
+        return 0 if parent is None or c["uuid"] in seen else 1 + depth(parent, seen + (c["uuid"],))
+
+    return sorted(categories, key=depth)
+
+
+def _merge_categories(db: Database, categories: list[dict], stats: dict) -> dict[str, int]:
+    """合併第 2 版的分類，回傳 {對方的 uuid: 本機 id}。"""
+    mapping: dict[str, int] = {}
+    keys = ("parent", "name", "position", "progress", "priority", "updated_at", "deleted_at")
+    for c in _incoming_order(categories):
+        c = {**c, "priority": c.get("priority", DEFAULT_PRIORITY)}  # 較早的 2.0 備份沒有分類優先度
+        parent_id = None
+        if c.get("parent"):
+            parent_id = mapping.get(c["parent"])
+            if parent_id is None:
+                found = db.conn.execute("SELECT id FROM categories WHERE uuid=?", (c["parent"],)).fetchone()
+                parent_id = found["id"] if found else None
+        row = db.conn.execute("SELECT * FROM categories WHERE uuid=?", (c["uuid"],)).fetchone()
+        if row is None and not c.get("deleted_at"):
+            # 兩邊各自建立了同一層同名的分類（uuid 不同）：當成同一個
+            row = db.conn.execute(f"SELECT * FROM categories WHERE name=? AND parent_id IS ? AND {LIVE}",
+                                  (c["name"], parent_id)).fetchone()
+        if row is not None:
+            mapping[c["uuid"]] = row["id"]
+            local = _category_record(db, row)
+            if not _incoming_wins({k: local[k] for k in keys}, {k: c.get(k) for k in keys}):
+                continue
+            if parent_id is not None and parent_id in db.category_subtree(row["id"]):
+                parent_id = row["parent_id"]  # 會形成循環時保留本機的上層
+            db.conn.execute(
+                "UPDATE categories SET parent_id=?, name=?, position=?, progress=?, priority=?, updated_at=?"
+                " WHERE id=?",
+                (parent_id, c["name"], c["position"], c.get("progress"), c["priority"], c["updated_at"], row["id"]))
+            if c.get("deleted_at") and row["deleted_at"] is None:
+                _apply_remote_delete(db, row["id"], c["updated_at"], c["deleted_at"])
+            elif not c.get("deleted_at"):
+                db.conn.execute("UPDATE categories SET deleted_at=NULL WHERE id=?", (row["id"],))
+        else:
+            mapping[c["uuid"]] = db.conn.execute(
+                "INSERT INTO categories (uuid, parent_id, name, position, progress, priority, updated_at, deleted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (c["uuid"], parent_id, c["name"], c["position"], c.get("progress"), c["priority"], c["updated_at"],
+                 c.get("deleted_at"))).lastrowid
+        stats["categories"] += 1
+    return mapping
+
+
+def _category_by_uuid(db: Database, node_uuid: str | None, mapping: dict[str, int]) -> int | None:
+    if not node_uuid:
+        return None
+    category_id = mapping.get(node_uuid)
+    if category_id is None:
+        row = db.conn.execute("SELECT id FROM categories WHERE uuid=?", (node_uuid,)).fetchone()
+        category_id = row["id"] if row else None
+    return _nearest_live(db, category_id)
+
+
+def _category_by_name(db: Database, name: str | None, now: str) -> int | None:
+    """第 1 版：紀錄的分類是第一層的名稱；本機沒有就建立，本機已刪除則當作未分類。"""
     if not name:
         return None
-    row = db.conn.execute("SELECT id, deleted_at FROM categories WHERE name=?", (name,)).fetchone()
+    row = db.conn.execute("SELECT id, deleted_at FROM categories WHERE name=? AND parent_id IS NULL"
+                          " ORDER BY deleted_at IS NOT NULL", (name,)).fetchone()
     if row:
         return None if row["deleted_at"] else row["id"]
-    pos = db._next_category_position()
-    return db.conn.execute("INSERT INTO categories (name, position, updated_at) VALUES (?, ?, ?)",
-                           (name, pos, now)).lastrowid
+    return db._ensure_category(None, name, now)
 
 
-def _merge_category(db: Database, c: dict, stats: dict):
-    row = db.conn.execute("SELECT * FROM categories WHERE name=?", (c["name"],)).fetchone()
-    if row and not _incoming_wins(
-            {k: row[k] for k in ("name", "position", "updated_at", "deleted_at")},
-            {k: c.get(k) for k in ("name", "position", "updated_at", "deleted_at")}):
+def _merge_category_v1(db: Database, c: dict, stats: dict):
+    """第 1 版的分類：只有第一層，以名稱對應。"""
+    row = db.conn.execute("SELECT * FROM categories WHERE name=? AND parent_id IS NULL"
+                          " ORDER BY deleted_at IS NOT NULL", (c["name"],)).fetchone()
+    keys = ("name", "position", "updated_at", "deleted_at")
+    if row and not _incoming_wins({k: row[k] for k in keys}, {k: c.get(k) for k in keys}):
         return
     if row is None:
-        db.conn.execute("INSERT INTO categories (name, position, updated_at, deleted_at) VALUES (?, ?, ?, ?)",
-                        (c["name"], c["position"], c["updated_at"], c["deleted_at"]))
+        db.conn.execute(
+            "INSERT INTO categories (uuid, parent_id, name, position, updated_at, deleted_at)"
+            " VALUES (?, NULL, ?, ?, ?, ?)",
+            (category_uuid([c["name"]]), c["name"], c["position"], c["updated_at"], c["deleted_at"]))
     else:
-        db.conn.execute("UPDATE categories SET position=?, updated_at=?, deleted_at=? WHERE id=?",
-                        (c["position"], c["updated_at"], c["deleted_at"], row["id"]))
-        if c["deleted_at"]:
-            # 對方刪了這個分類：本機紀錄改成未分類，但不更新 updated_at，以免蓋掉對方較新的紀錄
-            db.conn.execute("UPDATE entries SET category_id=NULL WHERE category_id=?", (row["id"],))
+        db.conn.execute("UPDATE categories SET position=?, updated_at=? WHERE id=?",
+                        (c["position"], c["updated_at"], row["id"]))
+        if c["deleted_at"] and row["deleted_at"] is None:
+            _apply_remote_delete(db, row["id"], c["updated_at"], c["deleted_at"])
+        elif not c["deleted_at"]:
+            db.conn.execute("UPDATE categories SET deleted_at=NULL WHERE id=?", (row["id"],))
     stats["categories"] += 1
 
 
-def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list):
+def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list, resolve_category) -> int | None:
+    """合併一筆紀錄，回傳寫入的本機 id（沒有寫入時回傳 None）。"""
     # 舊資料包沒有這些欄位：當作沒有標題、預設優先順序
     e = {**e, "title": e.get("title", ""), "priority": e.get("priority", DEFAULT_PRIORITY),
          "status": LEGACY_STATUSES.get(e["status"], e["status"])}
     row = db.conn.execute("SELECT * FROM entries WHERE uuid=?", (e["uuid"],)).fetchone()
     if row and not _incoming_wins(_entry_record(db, row), e):
-        return
+        return None
 
     if e["deleted_at"]:
         if row is None:
@@ -178,9 +298,9 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
         else:
             removed_files += db._tombstone(row["id"], e["updated_at"])
             stats["deleted"] += 1
-        return
+        return None
 
-    category_id = _category_id(db, e.get("category"), e["updated_at"])
+    category_id = resolve_category(e.get("category"), e["updated_at"])
     if row is None:
         entry_id = db.conn.execute(
             "INSERT INTO entries (uuid, date, time, title, text, status, priority, category_id, created_at,"
@@ -226,6 +346,7 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
             db.conn.execute(
                 "INSERT INTO images (entry_id, position, path, original_name, include) VALUES (?, ?, ?, ?, ?)",
                 (entry_id, pos, img["path"], img.get("original_name", ""), int(img.get("include", True))))
+    return entry_id
 
 
 def merge(db: Database, data: dict, read_image) -> dict:
@@ -233,11 +354,22 @@ def merge(db: Database, data: dict, read_image) -> dict:
     validate(data)
     stats = {"added": 0, "updated": 0, "deleted": 0, "categories": 0}
     removed_files = []
+    legacy = data["version"] == 1
     with db.conn:
-        for c in data.get("categories", []):
-            _merge_category(db, c, stats)
+        if legacy:
+            for c in data.get("categories", []):
+                _merge_category_v1(db, c, stats)
+            resolve = lambda name, now: _category_by_name(db, name, now)  # noqa: E731
+        else:
+            mapping = _merge_categories(db, data.get("categories", []), stats)
+            resolve = lambda node_uuid, _now: _category_by_uuid(db, node_uuid, mapping)  # noqa: E731
+        written = []
         for e in data.get("entries", []):
-            _merge_entry(db, e, read_image, stats, removed_files)
+            entry_id = _merge_entry(db, e, read_image, stats, removed_files, resolve)
+            if entry_id is not None:
+                written.append(entry_id)
+        if legacy:  # 舊版資料包：和資料庫升級一樣，把第一個 tag 轉成子分類
+            convert_first_tags(db, written)
         # 所有紀錄都進來後再接上 carried_from，前後順序不影響
         for e in data.get("entries", []):
             if e.get("carried_from"):

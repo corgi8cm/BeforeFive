@@ -74,7 +74,7 @@ def test_new_entry_defaults_to_last_category_and_tags(qapp, tmp_path):
     cid = db.categories()[2][0]
     db.save_entry(Entry(None, DATE, "09:00", "a", "done", ["專案A"], category_id=cid))
     dlg = EntryDialog(db, DATE)
-    assert dlg.category_box.currentData() == cid
+    assert dlg.category_picker.category_id() == cid
     assert dlg.tag_edit.tags() == ["專案A"]
 
 
@@ -108,9 +108,9 @@ def test_review_copies_markdown_and_manage_dialog(qapp, tmp_path, monkeypatch):
     win.review()
     assert "寫週報" in QApplication.clipboard().text()
 
-    win.category_filter.setCurrentIndex(win.category_filter.findData(mw.UNCATEGORIZED))
+    win.select_category(mw.UNCATEGORIZED)
     assert len(win.entry_items()) == 1
-    win.category_filter.setCurrentIndex(1)  # 第一個分類，沒有紀錄
+    win.select_category(db.categories()[0][0])  # 第一個分類，沒有紀錄
     assert len(win.entry_items()) == 0
 
     ManageDialog(db, win)  # 能建立即可

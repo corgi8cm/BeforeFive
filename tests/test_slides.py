@@ -3,7 +3,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from reporttool.db import Database, Entry
-from reporttool.slides import export_slides, order_by_tag
+from reporttool.slides import export_slides, order_by_category
 
 DATE = "2026-11-02"
 
@@ -16,12 +16,16 @@ def pictures(slide):
     return [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
 
 
-def test_order_by_tag():
-    def e(text, status, tags):
-        return Entry(None, DATE, "00:00", text, status, tags), []
+def test_order_by_category_tree():
+    """依分類樹的順序（上層的紀錄在子分類之前），未分類最後；同一層依優先順序、再依標題，tag 與狀態不影響。"""
+    def e(text, category_id, priority=3, tags=(), status="done"):
+        return Entry(None, DATE, "00:00", text, status, list(tags), category_id=category_id, priority=priority), []
 
-    items = [e("a", "waiting", ["A"]), e("b", "done", []), e("c", "done", ["B"]), e("d", "done", ["A", "B"])]
-    assert [it[0].text for it in order_by_tag(items)] == ["d", "a", "c", "b"]
+    dev, proj, meeting = 1, 2, 3  # 樹狀順序：開發、開發 › 專案A、會議
+    items = [e("z", None), e("b 專案", proj, tags=["A"]), e("a 專案", proj, tags=["B"]), e("週會", meeting),
+             e("急件", proj, priority=1, status="waiting"), e("開發雜事", dev)]
+    assert [it[0].text for it in order_by_category(items, [dev, proj, meeting])] == [
+        "開發雜事", "急件", "a 專案", "b 專案", "週會", "z"]
 
 
 def test_export_slides(tmp_path):
@@ -63,13 +67,3 @@ def test_export_uses_template(tmp_path):
 
     out = Presentation(str(export_slides(db, DATE, tmp_path / "out", template)))
     assert out.slide_width == prs.slide_width and len(out.slides) == 2
-
-
-def test_order_by_category():
-    from reporttool.slides import order_by_category
-
-    def e(text, category, tags=()):
-        return Entry(None, DATE, "00:00", text, "done", list(tags), category=category), []
-
-    items = [e("a", ""), e("b", "會議"), e("c", "開發", ["B"]), e("d", "開發", ["A"]), e("f", "開發", ["B"])]
-    assert [it[0].text for it in order_by_category(items, ["開發", "會議"])] == ["c", "f", "d", "b", "a"]

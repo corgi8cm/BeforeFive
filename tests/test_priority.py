@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from reporttool.config import load_settings
 from reporttool.db import Database, Entry
-from reporttool.slides import order_by_tag
+from reporttool.slides import order_by_category
 from reporttool.sync import BundleError, import_bundle, snapshot
 from reporttool.ui.entry_dialog import EntryDialog
 from reporttool.ui.main_window import CONTENT_COL, MainWindow
@@ -73,12 +73,12 @@ def test_list_sorts_by_priority_within_group(qapp, tmp_path):
                                        ("11:00", "c", ["A"], 1), ("12:00", "d", ["A"], 3)]:
         db.save_entry(Entry(None, DATE, time, text, "done", tags, priority=priority))
     win = MainWindow(db, load_settings(tmp_path / "config"))
-    win.category_filter.setCurrentIndex(win.category_filter.findText("未分類"))
     win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
-    groups = [win.tree.topLevelItem(i) for i in range(win.tree.topLevelItemCount())]
-    outline = [[g.child(i).text(CONTENT_COL) for i in range(g.childCount())] for g in groups]
-    assert outline == [["c", "a", "d"], ["b"]]  # 組的順序不變，組內優先的排前面
-    assert groups[0].child(0).text(1) == "1"
+    [group] = [win.tree.topLevelItem(i) for i in range(win.tree.topLevelItemCount())]
+    assert group.text(0) == "未分類（4）"
+    # tag 不影響分組：同一層依優先順序，再依標題
+    assert [group.child(i).text(CONTENT_COL) for i in range(group.childCount())] == ["c", "a", "d", "b"]
+    assert group.child(0).text(1) == "1"
 
     win.group_box.setChecked(False)
     flat = [win.tree.topLevelItem(i).text(CONTENT_COL) for i in range(win.tree.topLevelItemCount())]
@@ -111,4 +111,4 @@ def test_slides_order_by_priority_first():
         return Entry(None, DATE, "00:00", text, status, ["A"], priority=priority), []
 
     items = [e("a", "done", 3), e("b", "waiting", 1), e("c", "done", 2)]
-    assert [it[0].text for it in order_by_tag(items)] == ["b", "c", "a"]
+    assert [it[0].text for it in order_by_category(items, [])] == ["b", "c", "a"]

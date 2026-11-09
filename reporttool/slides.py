@@ -15,7 +15,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
-from .db import REPORT_ORDER, STATUS_ICONS, STATUS_LABELS, Database, Entry
+from .db import REPORT_ORDER, STATUS_ICONS, STATUS_LABELS, Database, Entry, same_level_key
 from .report import NumberedImage, continued_since, format_entry_line, number_images, report_folder
 
 FONT = "Microsoft JhengHei"
@@ -29,24 +29,11 @@ CATEGORY_RGB = RGBColor(0x5F, 0x63, 0x68)
 PRIORITY_RGB = {1: RGBColor(0xD6, 0x45, 0x45), 2: RGBColor(0xE0, 0x8A, 0x00)}
 
 
-def order_by_tag(items: list[tuple[Entry, list]]) -> list[tuple[Entry, list]]:
-    """依第一個 tag 分組（照第一次出現的順序），組內依 優先順序→狀態（完成在前、取消在後）→時間；沒有 tag 的放最後。"""
-    groups: dict[str | None, list] = {}
-    for item in items:
-        tags = item[0].tags
-        groups.setdefault(tags[0] if tags else None, []).append(item)
-    keys = [k for k in groups if k is not None] + ([None] if None in groups else [])
-    return [item for k in keys for item in sorted(groups[k], key=lambda it: (it[0].priority, REPORT_ORDER[it[0].status]))]
-
-
-def order_by_category(items: list[tuple[Entry, list]], category_order: list[str]) -> list[tuple[Entry, list]]:
-    """先依分類（照分類清單順序，未分類放最後），分類內再用 order_by_tag。"""
-    rank = {name: i for i, name in enumerate(category_order)}
-    groups: dict[str, list] = {}
-    for item in items:
-        groups.setdefault(item[0].category, []).append(item)
-    keys = sorted(groups, key=lambda name: (name == "", rank.get(name, len(rank)), name))
-    return [item for k in keys for item in order_by_tag(groups[k])]
+def order_by_category(items: list[tuple[Entry, list]], category_order: list[int]) -> list[tuple[Entry, list]]:
+    """依分類樹的順序（category_order 是樹狀順序的分類 id，先父後子），未分類放最後；
+    同一個分類內依優先順序、再依標題。tag 不影響順序。"""
+    rank = {cid: i for i, cid in enumerate(category_order)}
+    return sorted(items, key=lambda it: (rank.get(it[0].category_id, len(rank)), same_level_key(it[0])))
 
 
 # ---- 繪圖小工具 ----
@@ -142,12 +129,12 @@ def _cover(prs, date: str, entries: list[Entry]):
             continue
         left += _chip(slide, left, Inches(4.1), f"{STATUS_LABELS[status]} {count}", STATUS_RGB[status]) + Inches(0.2)
 
-    tags = []
+    categories = []
     for e in entries:
-        tags += [t for t in e.tags if t not in tags]
-    if tags:
-        _text(slide, Inches(0.8), Inches(4.9), w - Inches(1.6), Inches(1.0), " ".join(f"#{t}" for t in tags),
-              18, color=MUTED)
+        if e.category and e.category not in categories:
+            categories.append(e.category)
+    if categories:
+        _text(slide, Inches(0.8), Inches(4.9), w - Inches(1.6), Inches(1.0), "　".join(categories), 18, color=MUTED)
 
 
 def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page: int, total: int,
@@ -224,8 +211,8 @@ def export_slides(db: Database, date: str, output_root, template: Path | None = 
         prs = Presentation()
         prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
 
-    _cover(prs, date, entries)
-    items = order_by_category(number_images(db, entries), [name for _id, name in db.categories()])
+    items = order_by_category(number_images(db, entries), [cid for cid, _label in db.categories()])
+    _cover(prs, date, [entry for entry, _images in items])
     for page, (entry, images) in enumerate(items, start=1):
         _entry_slide(prs, entry, images, date, page, len(items), max_side, continued_since(db, entry))
 

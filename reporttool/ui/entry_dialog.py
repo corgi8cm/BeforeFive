@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_tags
+from .category_picker import CategoryPicker
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 STATUS_COLORS = {"todo": "#6b7580", "doing": "#2f6fd6", "waiting": "#e08a00", "review": "#8a4fd1",
@@ -186,12 +187,14 @@ class EntryDialog(QDialog):
     saved = Signal(int)
 
     def __init__(self, db: Database, entry_date: str, entry: Entry | None = None, parent=None,
-                 follow_up_of: Entry | None = None):
-        """entry：編輯既有紀錄；follow_up_of：替這筆工作追加一筆新進度（會串成同一件工作的歷程）。"""
+                 follow_up_of: Entry | None = None, category_id: int | None = None):
+        """entry：編輯既有紀錄；follow_up_of：替這筆工作追加一筆新進度（會串成同一件工作的歷程）；
+        category_id：新紀錄直接放在這個分類（從左邊分類樹的右鍵選單新增）。"""
         super().__init__(parent)
         self.db = db
         self.entry = entry
         self.follow_up_of = follow_up_of
+        self.preset_category = category_id
         self.entry_date = entry.date if entry else entry_date
         if entry:
             title = "編輯紀錄"
@@ -237,19 +240,16 @@ class EntryDialog(QDialog):
         self.time_edit = QTimeEdit()
         self.time_edit.setDisplayFormat("HH:mm")
         self.time_edit.setButtonSymbols(QTimeEdit.NoButtons)
-        self.time_edit.setFixedWidth(70)
+        self.time_edit.setFixedWidth(80)
         status_row.addWidget(self.time_edit)
 
         # 分類 + tags
-        self.category_box = QComboBox()
-        self.category_box.addItem("（未分類）", None)
-        for cid, name in db.categories():
-            self.category_box.addItem(name, cid)
-        self.category_box.setToolTip("分類")
+        self.category_picker = CategoryPicker(db)
         self.tag_edit = TagEdit(db.all_tags())
+        self.tag_edit.setToolTip("tag 只是標籤，不影響分組與排序")
         tag_row = QHBoxLayout()
-        tag_row.addWidget(self.category_box)
-        tag_row.addWidget(self.tag_edit, 1)
+        tag_row.addWidget(self.category_picker, 3)
+        tag_row.addWidget(self.tag_edit, 2)
         chips = QHBoxLayout()
         chips.setSpacing(4)
         for tag in db.recent_tags(8):
@@ -318,8 +318,7 @@ class EntryDialog(QDialog):
         self.priority_box.setCurrentIndex(max(self.priority_box.findData(priority), 0))
 
     def _set_category(self, category_id):
-        index = self.category_box.findData(category_id)
-        self.category_box.setCurrentIndex(max(index, 0))
+        self.category_picker.set_category(category_id)
 
     def _load(self, entry: Entry | None):
         if entry is None:
@@ -330,7 +329,9 @@ class EntryDialog(QDialog):
                 btn.setChecked(btn.property("status") == status)
             self.time_edit.setTime(QTime.currentTime())
             self._set_priority(self.follow_up_of.priority if self.follow_up_of else DEFAULT_PRIORITY)
-            if source:
+            if self.preset_category is not None:  # 指定了分類：不沿用上一筆（其他分類）的 tag
+                self._set_category(self.preset_category)
+            elif source:
                 self._set_category(source.category_id)
                 self.tag_edit.set_tags(source.tags)
             if self.follow_up_of:  # 同一件工作沿用標題
@@ -395,7 +396,7 @@ class EntryDialog(QDialog):
 
         entry = self.entry or Entry(None, self.entry_date, "", "", "",
                                     carried_from=self.follow_up_of.id if self.follow_up_of else None)
-        entry.category_id = self.category_box.currentData()
+        entry.category_id = self.category_picker.category_id()
         entry.time = self.time_edit.time().toString("HH:mm")
         entry.title = title
         entry.text = text

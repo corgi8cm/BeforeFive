@@ -14,12 +14,14 @@ DEFAULT_SETTINGS = {
     "data_dir": "",  # 空白 = %LOCALAPPDATA%\ReportTool\data
     "output_dir": "",  # 空白 = 專案底下的 WorkReports
     "max_image_side": 1600,
+    "show_progress": True,  # 主視窗是否顯示分類進度（主視窗的「顯示進度」勾選框）
 }
 
 DEFAULT_INSTRUCTIONS = """\
-- 先依紀錄中的 [分類：X] 分成大段，用分類名稱當標題（例如 *【開發】*），沒有分類的放在最後的「*【未分類】*」
-- 每個分類內再依 tag 分組，用 tag 當小標題（例如 *#專案A*），相同 tag 的項目放在同一組；一筆有多個 tag 時以第一個為準，沒有 tag 的放在該分類最後
-- 每組內用條列，依「✅ 完成」「👀 待確認」「🔄 進行中」「⏳ 等待中」「📝 待辦」「🚫 取消」的順序排列，每項開頭標上對應的狀態符號
+- 依紀錄中的 [分類：…] 分層整理：第一層分類當大標題（例如 *【開發】*），底下的子分類依序當小標題（例如 *專案A › 登入頁*），沒有分類的放在最後的「*【未分類】*」
+- #tag 只是補充標籤，可以在描述中帶出，但不要用來分組
+- 同一層的項目依 [優先N] 排列（1 最前），相同時依標題；每項開頭標上狀態符號：✅ 完成、👀 待確認、🔄 進行中、⏳ 等待中、📝 待辦、🚫 取消
+- 「## 分類資訊」依排列順序列出用到的分類：同一層的分類照這個順序排（已依優先度排好），有寫進度的在分類標題後面標上進度（例如 *專案A（40%）*）
 - 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
 - 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
 - 只用紀錄和圖片中的內容，不要補充或編造
@@ -28,15 +30,29 @@ DEFAULT_INSTRUCTIONS = """\
 """
 
 _LINES = DEFAULT_INSTRUCTIONS.splitlines()
-STATUS_LINE, CONTINUED_LINE, CHANGES_LINE = _LINES[2], _LINES[3], _LINES[4]
-# 舊版預設的狀態那一行：instructions.md 只在第一次執行時建立，程式更新後要自動換成新版
-OLD_STATUS_LINES = ("- 每組內用條列，依「✅ 完成」「🔄 進行中」「⛔ 卡住」的順序排列，每項開頭標上對應的狀態符號",)
+CATEGORY_LINE, TAG_LINE, ORDER_LINE, PROGRESS_LINE, CONTINUED_LINE, CHANGES_LINE = _LINES[:6]
+# 舊版預設的那幾行要換成什麼。instructions.md 只在第一次執行時建立，程式更新後要自動換成新版；
+# 使用者自己改過的行對不上，就不會動。
+OLD_LINES = {
+    # 1.0.0：分類只有一層、依 tag 分組
+    "- 先依紀錄中的 [分類：X] 分成大段，用分類名稱當標題（例如 *【開發】*），沒有分類的放在最後的「*【未分類】*」":
+        [CATEGORY_LINE],
+    "- 每個分類內再依 tag 分組，用 tag 當小標題（例如 *#專案A*），相同 tag 的項目放在同一組；一筆有多個 tag 時以第一個為準，"
+    "沒有 tag 的放在該分類最後": [TAG_LINE],
+    "- 每組內用條列，依「✅ 完成」「👀 待確認」「🔄 進行中」「⏳ 等待中」「📝 待辦」「🚫 取消」的順序排列，每項開頭標上對應的狀態符號":
+        [ORDER_LINE, PROGRESS_LINE],
+    # 2.0.0 開發中的版本：只有分類進度
+    "- 有「## 分類進度」時，在對應的分類標題後面標上進度（例如 *專案A（40%）*）": [PROGRESS_LINE],
+    # 1.0.0 之前：三種狀態
+    "- 每組內用條列，依「✅ 完成」「🔄 進行中」「⛔ 卡住」的順序排列，每項開頭標上對應的狀態符號": [ORDER_LINE, PROGRESS_LINE],
+}
 
 
 def upgrade_instructions(text: str) -> str:
     """只改舊版預設的那幾行，使用者自己寫的內容不動。"""
-    lines = text.splitlines()
-    lines = [STATUS_LINE if line.strip() in OLD_STATUS_LINES else line for line in lines]
+    lines = []
+    for line in text.splitlines():
+        lines += OLD_LINES.get(line.strip(), [line])
     if "⇄" not in text and CONTINUED_LINE in lines:
         lines.insert(lines.index(CONTINUED_LINE) + 1, CHANGES_LINE)
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
@@ -49,6 +65,18 @@ class Settings:
     output_dir: Path
     max_image_side: int
     config_dir: Path
+    show_progress: bool = True
+
+    def save(self, key: str, value):
+        """把一個設定寫回 settings.json（其他內容不動），同時更新這個物件。"""
+        path = self.config_dir / "settings.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = dict(DEFAULT_SETTINGS)
+        raw[key] = value
+        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        setattr(self, key, value)
 
     @property
     def instructions_path(self) -> Path:
@@ -86,6 +114,7 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
         output_dir=Path(os.path.expandvars(raw["output_dir"])) if raw["output_dir"] else ROOT / "WorkReports",
         max_image_side=int(raw["max_image_side"]),
         config_dir=config_dir,
+        show_progress=bool(raw["show_progress"]),
     )
 
 

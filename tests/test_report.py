@@ -42,7 +42,7 @@ def test_generate_report(tmp_path):
         assert im.size == (800, 600)  # 小圖不放大
 
     md = (folder / "report.md").read_text(encoding="utf-8")
-    assert md.startswith(f"# 工作回報整理請求（{DATE}）\n\n## 指示\n- 先依紀錄中的 [分類：X]")
+    assert md.startswith(f"# 工作回報整理請求（{DATE}）\n\n## 指示\n- 依紀錄中的 [分類：…]")
     assert "- [10:20][進行中][優先3][#專案A] 修登入頁 timeout 問題（![附圖1]）" in md
     assert "- [14:05][完成][優先3][#專案A] timeout 修好，已送 PR（![附圖2]、附圖3：未提供）" in md
     assert md.endswith("\n\n[附圖1]: <01_修登入頁timeout問題.png>\n[附圖2]: <02_timeout修好，已送PR.jpg>\n")
