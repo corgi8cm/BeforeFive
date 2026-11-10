@@ -57,7 +57,7 @@ def test_report_line_and_image_name_use_title(tmp_path):
     md = (folder / "report.md").read_text(encoding="utf-8")
     assert "- [09:00][進行中][優先3] 【登入 timeout】查到原因\n  改設定檔（![附圖1]）" in md
     assert md.endswith("[附圖1]: <01_登入timeout.png>\n")
-    assert "- [10:00][完成][優先3] 【只有標題】\n" in md
+    assert "- [09:00–10:00 1h][完成][優先3] 【只有標題】\n" in md
     assert (folder / "01_登入timeout.png").exists()
 
 

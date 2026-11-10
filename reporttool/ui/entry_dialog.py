@@ -1,21 +1,45 @@
 """新增／編輯紀錄的視窗（全域快捷鍵叫出的也是這個）。"""
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, Qt, QTime, Signal
+from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
-from ..db import DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_tags
+from ..db import (
+    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_tags, resolve_times, span_text,
+)
 from .category_picker import CategoryPicker
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 STATUS_COLORS = {"todo": "#6b7580", "doing": "#2f6fd6", "waiting": "#e08a00", "review": "#8a4fd1",
                  "done": "#2e9d5b", "cancelled": "#a0a0a0"}
+
+
+def now_parts() -> tuple[str, str]:
+    """（今天 YYYY-MM-DD, 現在 HH:MM）；測試時可以替換。"""
+    now = datetime.now()
+    return now.strftime("%Y-%m-%d"), now.strftime("%H:%M")
+
+
+def time_field(placeholder: str, tip: str) -> QLineEdit:
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    edit.setToolTip(tip)
+    edit.setMaxLength(5)
+    edit.setFixedWidth(64)
+    edit.setAlignment(Qt.AlignCenter)
+    return edit
+
+
+TIME_TIP = ("這件事的起訖時間（HH:MM，也可以打 0930）。\n"
+            "今天的新紀錄兩個都不填：起始＝今天前一筆的結束，結束＝存檔當下。\n"
+            "補記別天的事、編輯舊紀錄時兩個都要填；結束時間最晚到現在。")
 
 
 def extract_images(mime) -> list:
@@ -236,12 +260,12 @@ class EntryDialog(QDialog):
         self.priority_box.setFixedWidth(100)
         self.priority_box.setToolTip("執行優先順序，主視窗同一組內優先的排前面")
         status_row.addWidget(self.priority_box)
-        status_row.addWidget(QLabel("時間"))
-        self.time_edit = QTimeEdit()
-        self.time_edit.setDisplayFormat("HH:mm")
-        self.time_edit.setButtonSymbols(QTimeEdit.NoButtons)
-        self.time_edit.setFixedWidth(80)
-        status_row.addWidget(self.time_edit)
+        status_row.addWidget(QLabel("時段"))
+        self.start_edit = time_field("起始", TIME_TIP)
+        self.end_edit = time_field("結束", TIME_TIP)
+        status_row.addWidget(self.start_edit)
+        status_row.addWidget(QLabel("–"))
+        status_row.addWidget(self.end_edit)
 
         # 分類 + tags
         self.category_picker = CategoryPicker(db)
@@ -307,7 +331,7 @@ class EntryDialog(QDialog):
             return None
         if not chain:
             return None
-        lines = [f"{e.date[5:]} {e.time}　[{STATUS_LABELS[e.status]}]　{e.summary}"
+        lines = [f"{e.date[5:]} {span_text(e, False)}　[{STATUS_LABELS[e.status]}]　{e.summary}"
                  for e in chain[-5:]]
         label = QLabel("先前進度：\n" + "\n".join(lines))
         label.setWordWrap(True)
@@ -327,7 +351,6 @@ class EntryDialog(QDialog):
             status = self.follow_up_of.status if self.follow_up_of else "doing"
             for btn in self.status_group.buttons():
                 btn.setChecked(btn.property("status") == status)
-            self.time_edit.setTime(QTime.currentTime())
             self._set_priority(self.follow_up_of.priority if self.follow_up_of else DEFAULT_PRIORITY)
             if self.preset_category is not None:  # 指定了分類：不沿用上一筆（其他分類）的 tag
                 self._set_category(self.preset_category)
@@ -340,7 +363,8 @@ class EntryDialog(QDialog):
         for btn in self.status_group.buttons():
             btn.setChecked(btn.property("status") == entry.status)
         self._set_category(entry.category_id)
-        self.time_edit.setTime(QTime.fromString(entry.time, "HH:mm"))
+        self.start_edit.setText(entry.start)
+        self.end_edit.setText(entry.end)
         self.title_edit.setText(entry.title)
         self._set_priority(entry.priority)
         self.text.setPlainText(entry.text)
@@ -381,6 +405,15 @@ class EntryDialog(QDialog):
             QMessageBox.warning(self, "還沒寫內容", "請輸入這筆紀錄的標題或內容。")
             self.text.setFocus()
             return
+        today, now = now_parts()
+        try:
+            start, end = resolve_times(self.start_edit.text(), self.end_edit.text(), date=self.entry_date,
+                                       today=today, now=now, editing=self.entry is not None,
+                                       follow_up=self.follow_up_of is not None)
+        except ValueError as e:
+            QMessageBox.warning(self, "時段不正確", str(e))
+            self.start_edit.setFocus()
+            return
         images = []
         for item in self.strip.items:
             if item.image is not None:
@@ -397,7 +430,9 @@ class EntryDialog(QDialog):
         entry = self.entry or Entry(None, self.entry_date, "", "", "",
                                     carried_from=self.follow_up_of.id if self.follow_up_of else None)
         entry.category_id = self.category_picker.category_id()
-        entry.time = self.time_edit.time().toString("HH:mm")
+        if self.entry is None:
+            entry.time = now  # 建立時間，只用來排序；起訖都空白時由 save_entry 依「前一則」自動補
+        entry.start, entry.end = start, end
         entry.title = title
         entry.text = text
         entry.status = self.status_group.checkedButton().property("status")

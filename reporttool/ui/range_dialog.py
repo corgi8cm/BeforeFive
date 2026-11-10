@@ -14,17 +14,25 @@ def month_range(day: QDate, months_ago: int = 0) -> tuple[QDate, QDate]:
     return first, first.addDays(first.daysInMonth() - 1)
 
 
+REPORT_HINT = "產生 report_開始_to_結束 資料夾（report.md 與附圖），內容會複製到剪貼簿。"
+
+
 class RangeDialog(QDialog):
-    def __init__(self, today: QDate, parent=None):
+    def __init__(self, today: QDate, parent=None, title: str = "整理日期範圍", ok_text: str = "整理",
+                 hint: str = REPORT_HINT, day: QDate | None = None):
+        """day：多一個「這一天」的選項，並預設選它（甘特圖用，預設是主視窗正在看的那天）。"""
         super().__init__(parent)
-        self.setWindowTitle("整理日期範圍")
+        self.setWindowTitle(title)
         self.start_edit = self._date_edit()
         self.end_edit = self._date_edit()
-        self.set_range(*week_range(today))
-        self.end_edit.setDate(today)  # 本週預設到今天就好
+        if day is None:
+            self.set_range(week_range(today)[0], today)  # 本週預設到今天就好
+        else:
+            self.set_range(day, day)
 
         presets = QHBoxLayout()
-        for label, (start, end) in [
+        choices = [("這一天", (day, day))] if day is not None else []
+        for label, (start, end) in choices + [
             ("本週", (week_range(today)[0], today)),
             ("上週", week_range(today, 1)),
             ("本月", (month_range(today)[0], today)),
@@ -41,7 +49,7 @@ class RangeDialog(QDialog):
         dates.addWidget(QLabel("到"))
         dates.addWidget(self.end_edit)
 
-        ok = QPushButton("整理")
+        ok = QPushButton(ok_text)
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
         cancel = QPushButton("取消")
@@ -52,7 +60,7 @@ class RangeDialog(QDialog):
         buttons.addWidget(cancel)
         buttons.addWidget(ok)
 
-        hint = QLabel("產生 report_開始_to_結束 資料夾（report.md 與附圖），內容會複製到剪貼簿。")
+        hint = QLabel(hint)
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#666;")
 

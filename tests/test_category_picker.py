@@ -13,6 +13,12 @@ from reporttool.ui.entry_dialog import EntryDialog
 DATE = "2026-11-08"
 
 
+@pytest.fixture(autouse=True)
+def today_is_date(monkeypatch):
+    from reporttool.ui import entry_dialog
+    monkeypatch.setattr(entry_dialog, "now_parts", lambda: (DATE, "17:00"))
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return QApplication.instance() or QApplication([])

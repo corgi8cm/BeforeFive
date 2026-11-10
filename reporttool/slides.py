@@ -15,7 +15,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
-from .db import REPORT_ORDER, STATUS_ICONS, STATUS_LABELS, Database, Entry, same_level_key
+from .db import REPORT_ORDER, STATUS_ICONS, STATUS_LABELS, Database, Entry, same_level_key, span_text
 from .report import NumberedImage, continued_since, format_entry_line, number_images, report_folder
 
 FONT = "Microsoft JhengHei"
@@ -147,10 +147,10 @@ def _entry_slide(prs, entry: Entry, images: list[NumberedImage], date: str, page
 
     _rect(slide, 0, 0, Inches(0.18), h, color)
 
-    # 第一行：時間、狀態、分類、tag
-    _text(slide, margin, Inches(0.35), Inches(1.0), Inches(0.45), entry.time, 16, color=MUTED,
-          anchor=MSO_ANCHOR.MIDDLE)
-    x = margin + Inches(1.0)
+    # 第一行：時段、狀態、分類、tag
+    _text(slide, margin, Inches(0.35), Inches(1.6), Inches(0.45), span_text(entry, duration=False), 16,
+          color=MUTED, anchor=MSO_ANCHOR.MIDDLE)
+    x = margin + Inches(1.6)
     x += _chip(slide, x, Inches(0.37), f"{STATUS_ICONS[entry.status]} {STATUS_LABELS[entry.status]}", color)
     x += Inches(0.15) + _chip(slide, x + Inches(0.15), Inches(0.37), f"優先 {entry.priority}",
                               PRIORITY_RGB.get(entry.priority, CATEGORY_RGB))

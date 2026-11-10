@@ -30,9 +30,11 @@ class EntryChange:
 
     @property
     def previous_label(self) -> str:
-        """「11-03」；同一天追加的進度再加上時間。"""
+        """「11-03」；同一天追加的進度再加上前一筆的起始時間。"""
         label = self.previous.date[5:]
-        return f"{label} {self.previous.time}" if self.previous.date == self.entry.date else label
+        if self.previous.date != self.entry.date:
+            return label
+        return f"{label} {self.previous.start or self.previous.time}"
 
     def summary(self) -> str:
         parts = list(self.fields)
@@ -85,9 +87,11 @@ def changes_for(db: Database, entries: list[Entry]) -> list[EntryChange]:
     return [c for c in (change_for(db, e) for e in entries) if c]
 
 
-def format_change_lines(change: EntryChange) -> str:
-    """report.md 中接在紀錄後面的幾行（含開頭換行）。"""
+def format_change_lines(change: EntryChange, diff: bool = True) -> str:
+    """report.md 中接在紀錄後面的幾行（含開頭換行）。diff=False 只寫摘要那一行（前後內容已經都列出來時）。"""
     text = f"\n  ⇄ 與 {change.previous_label} 相比：{change.summary()}"
+    if not diff:
+        return text
     return text + "".join(f"\n    {side}：{line}" for side, line in change.text_diff())
 
 

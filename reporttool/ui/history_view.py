@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
+from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry, span_text
 from .entry_dialog import STATUS_COLORS
 
 WEEKDAYS = "一二三四五六日"
@@ -22,7 +22,8 @@ def day_label(entry: Entry) -> str:
         weekday = WEEKDAYS[Date.fromisoformat(entry.date).weekday()]
     except ValueError:
         weekday = ""
-    return f"{entry.date[5:]}（{weekday}）{entry.time}" if weekday else f"{entry.date[5:]} {entry.time}"
+    span = span_text(entry, duration=False)
+    return f"{entry.date[5:]}（{weekday}）{span}" if weekday else f"{entry.date[5:]} {span}"
 
 
 def entry_html(db: Database, entry: Entry, current: bool = False, images: bool = True) -> str:

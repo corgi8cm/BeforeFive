@@ -5,21 +5,24 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from PySide6.QtCore import QByteArray, QDate, QItemSelectionModel, QMimeData, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
-    QInputDialog, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
 from ..changes import changes_for
 from ..config import Settings, load_instructions
-from ..db import STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, same_level_key
+from ..db import (
+    STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, hours_text, roll_up, same_level_key, span_text,
+)
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
+from .gantt_dialog import GanttDialog
 from .history_view import HistoryDialog, HistoryPreview
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import (
@@ -27,6 +30,7 @@ from .manage_dialog import (
 )
 from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
+from .search_dialog import SearchDialog
 
 ALL, UNCATEGORIZED = "all", "none"
 ALL_LABEL = "全部"
@@ -35,7 +39,7 @@ GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展
 SIDEBAR_KEY = Qt.UserRole + 2
 PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}
 CATEGORY_COL, CONTENT_COL = 3, 5
-SIDE_NAME, SIDE_PRIORITY, SIDE_COUNT, SIDE_PROGRESS = 0, 1, 2, 3
+SIDE_NAME, SIDE_PRIORITY, SIDE_COUNT, SIDE_HOURS, SIDE_PROGRESS = 0, 1, 2, 3, 4
 
 
 def sort_entries(entries: list[Entry]) -> list[Entry]:
@@ -179,6 +183,7 @@ class MainWindow(QMainWindow):
         self.db = db
         self.settings = settings
         self._quick_dialog = None
+        self._search_dialog = None
         self._nodes: list[Category] = []
         self.setWindowTitle(f"下班前 v{__version__}")
         self.resize(1100, 600)
@@ -226,7 +231,7 @@ class MainWindow(QMainWindow):
         # 左邊：分類樹（點選後右邊只顯示這個分類與子分類的紀錄）
         self.sidebar = CategoryDropTree()
         self.sidebar.entries_dropped.connect(self.move_entries)
-        self.sidebar.setHeaderLabels(["分類", "優", "筆", "進度"])
+        self.sidebar.setHeaderLabels(["分類", "優", "筆", "時數", "進度"])
         self.sidebar.setIndentation(14)
         self.sidebar.setMinimumWidth(260)
         self.sidebar.setItemDelegateForColumn(SIDE_PROGRESS, ProgressDelegate(self.sidebar))
@@ -236,6 +241,8 @@ class MainWindow(QMainWindow):
         side_header.setSectionResizeMode(SIDE_NAME, QHeaderView.Stretch)
         self.sidebar.setColumnWidth(SIDE_PRIORITY, 30)
         self.sidebar.setColumnWidth(SIDE_COUNT, 34)
+        self.sidebar.setColumnWidth(SIDE_HOURS, 48)
+        self.sidebar.headerItem().setToolTip(SIDE_HOURS, "這一天（含子分類）紀錄的時數加總；時段重疊的各自計算")
         self.sidebar.setColumnWidth(SIDE_PROGRESS, 112)
         self.sidebar.currentItemChanged.connect(lambda *_: self.refresh())
         self.sidebar.itemDoubleClicked.connect(self._sidebar_double_clicked)
@@ -243,7 +250,7 @@ class MainWindow(QMainWindow):
         self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
 
         self.tree = EntryTree()
-        self.tree.setHeaderLabels(["時間", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
+        self.tree.setHeaderLabels(["時段", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         # 可以多選（Ctrl／Shift），把選取的紀錄拖到左邊的分類上
@@ -271,6 +278,11 @@ class MainWindow(QMainWindow):
         side_buttons.addWidget(self.progress_btn)
         side_buttons.addWidget(self.child_btn)
         side_buttons.addStretch()
+        self.hours_box = QCheckBox("顯示時數")
+        self.hours_box.setChecked(settings.show_hours)
+        self.hours_box.setToolTip("在分類樹顯示這一天各分類（含子分類）的時數；時段重疊的紀錄各自計算")
+        self.hours_box.toggled.connect(self._toggle_hours)
+        side_buttons.addWidget(self.hours_box)
         side_panel = QWidget()
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(0, 0, 0, 0)
@@ -298,6 +310,16 @@ class MainWindow(QMainWindow):
         bottom.addWidget(button("編輯", self.edit_selected))
         bottom.addWidget(button("刪除", self.delete_selected))
         bottom.addWidget(button("追加今日進度", self.follow_up_selected, "替選取的工作新增今天的進度，會串成同一件工作的歷程"))
+        bottom.addSpacing(12)
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("🔍 搜尋紀錄（Ctrl+F）")
+        self.search_box.setToolTip("不限日期，找標題、內容、tag、分類；按 Enter 開啟結果")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.setFixedWidth(200)
+        self.search_box.returnPressed.connect(lambda: self.open_search(self.search_box.text()))
+        bottom.addWidget(self.search_box)
+        bottom.addWidget(button("📈 甘特圖", self.open_gantt, "把一天或一段期間的紀錄畫成甘特圖，可以存成 PNG"))
+        QShortcut(QKeySequence.Find, self, activated=lambda: (self.search_box.setFocus(), self.search_box.selectAll()))
         bottom.addStretch()
         bottom.addWidget(button("管理分類與標籤", self.manage))
         bottom.addWidget(button("編輯 AI 指示", lambda: open_path(settings.instructions_path)))
@@ -319,6 +341,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._apply_progress_visibility()
+        self.sidebar.setColumnHidden(SIDE_HOURS, not settings.show_hours)
         self.reload_categories()
 
     @property
@@ -361,6 +384,7 @@ class MainWindow(QMainWindow):
         items[UNCATEGORIZED] = none_item
         for item in items.values():
             item.setTextAlignment(SIDE_COUNT, Qt.AlignCenter)
+            item.setTextAlignment(SIDE_HOURS, Qt.AlignRight | Qt.AlignVCenter)
         self.sidebar.expandAll()
         self.sidebar.setCurrentItem(items.get(current, all_item))
         self.sidebar.blockSignals(False)
@@ -380,22 +404,23 @@ class MainWindow(QMainWindow):
             it += 1
 
     def _update_sidebar_counts(self, entries: list[Entry]):
-        """每個分類（含子分類）在這一天的紀錄數。"""
+        """每個分類（含子分類）在這一天的紀錄數與時數。"""
         parents = {n.id: n.parent_id for n in self._nodes}
-        counts: dict = {ALL: len(entries), UNCATEGORIZED: 0}
-        for e in entries:
-            if e.category_id is None:
-                counts[UNCATEGORIZED] += 1
-            cid, seen = e.category_id, set()
-            while cid is not None and cid not in seen:
-                seen.add(cid)
-                counts[cid] = counts.get(cid, 0) + 1
-                cid = parents.get(cid)
+        counts, none_count, all_count = roll_up(entries, parents)
+        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: e.minutes)
+        counts.update({ALL: all_count, UNCATEGORIZED: none_count})
+        minutes.update({ALL: all_minutes, UNCATEGORIZED: none_minutes})
         it = QTreeWidgetItemIterator(self.sidebar)
         while it.value():
-            n = counts.get(it.value().data(SIDE_NAME, SIDEBAR_KEY), 0)
+            key = it.value().data(SIDE_NAME, SIDEBAR_KEY)
+            n, m = counts.get(key, 0), minutes.get(key, 0)
             it.value().setText(SIDE_COUNT, str(n) if n else "")
+            it.value().setText(SIDE_HOURS, hours_text(m) if m else "")
             it += 1
+
+    def _toggle_hours(self, checked: bool):
+        self.settings.save("show_hours", checked)
+        self.sidebar.setColumnHidden(SIDE_HOURS, not checked)
 
     def _toggle_progress(self, checked: bool):
         self.settings.save("show_progress", checked)
@@ -518,7 +543,7 @@ class MainWindow(QMainWindow):
         n_img = len(e.images)
         n_ai = sum(i.include for i in e.images)
         img_text = f"{n_img}" + (f"（{n_ai} 給 AI）" if n_ai != n_img else "") if n_img else ""
-        item = QTreeWidgetItem([e.time, str(e.priority), f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}",
+        item = QTreeWidgetItem([span_text(e), str(e.priority), f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}",
                                 e.category, " ".join(f"#{t}" for t in e.tags), first_line, img_text])
         item.setTextAlignment(1, Qt.AlignCenter)
         if e.priority in PRIORITY_COLORS:
@@ -673,6 +698,55 @@ class MainWindow(QMainWindow):
         menu.addAction("刪除", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
+    def open_search(self, query: str = "") -> SearchDialog:
+        """另開搜尋視窗（不會擋住主視窗）；已經開著就換關鍵字。"""
+        if self._search_dialog is None:
+            self._search_dialog = SearchDialog(self.db, query.strip(), self)
+            self._search_dialog.entry_activated.connect(self.go_to_entry)
+            self._search_dialog.destroyed.connect(lambda: setattr(self, "_search_dialog", None))
+        else:
+            self._search_dialog.search(query.strip())
+        self._search_dialog.show()
+        self._search_dialog.raise_()
+        self._search_dialog.activateWindow()
+        return self._search_dialog
+
+    def open_gantt(self, start: str | None = None, end: str | None = None) -> GanttDialog | None:
+        """選範圍（預設是正在看的這一天）後另開甘特圖視窗；雙擊長條跳到那筆紀錄。"""
+        if start is None:
+            dlg = RangeDialog(QDate.currentDate(), self, "甘特圖範圍", "畫出來",
+                              "只選一天：橫軸是時間，每筆紀錄一條。選好幾天：橫軸是日期，每件工作一列。",
+                              self.date_edit.date())
+            if dlg.exec() != QDialog.Accepted:
+                return None
+            start, end = dlg.range()
+        gantt = GanttDialog(self.db, start, end or start, self.settings.output_dir, self)
+        gantt.entry_activated.connect(self.go_to_entry)
+        gantt.show()
+        return gantt
+
+    def go_to_entry(self, entry_id: int):
+        """跳到這筆紀錄的那一天並選取它；目前的分類篩選看不到它時改成「全部」。"""
+        entry = self.db.get_entry(entry_id)
+        if entry is None:
+            return
+        if not self._visible(entry, self.selected_category()):
+            self.select_category(ALL)
+        self.date_edit.setDate(QDate.fromString(entry.date, "yyyy-MM-dd"))  # 日期沒變時不會觸發 refresh
+        for item in self.entry_items():
+            if self._entry_id(item) == entry_id:
+                parent = item.parent()
+                while parent:  # 收合的群組要展開才看得到
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                break
+        self.select_entries([entry_id])
+        current = self.tree.currentItem()
+        if current:
+            self.tree.scrollToItem(current)
+        self.raise_()
+        self.activateWindow()
+
     def show_history(self, entry_id: int):
         """另開視窗顯示這件工作的完整歷程（不會擋住主視窗）。"""
         dlg = HistoryDialog(self.db, entry_id, self)
@@ -735,7 +809,7 @@ class MainWindow(QMainWindow):
         entries = [e for e in (self.db.get_entry(i) for i in self._selected_ids()) if e]
         if not entries:
             return
-        lines = "\n".join(f"[{e.time}] {e.summary[:60]}" for e in entries[:10])
+        lines = "\n".join(f"[{span_text(e, False)}] {e.summary[:60]}" for e in entries[:10])
         if len(entries) > 10:
             lines += f"\n…等共 {len(entries)} 筆"
         question = "確定刪除這筆紀錄？" if len(entries) == 1 else f"確定刪除這 {len(entries)} 筆紀錄？"

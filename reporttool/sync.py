@@ -10,7 +10,9 @@ bundle 是一個 zip（或同樣結構的資料夾）：
 版本：
     1  分類只有一層，以名稱辨識；紀錄的 category 是分類名稱
     2  分類是樹狀（uuid、parent、progress、priority）；紀錄的 category 是分類 uuid
-匯入第 1 版時會做和資料庫升級相同的轉換（第一個 tag 變成子分類）。
+    3  紀錄有起訖時間 start_time、end_time
+匯入第 1 版時會做和資料庫升級相同的轉換（第一個 tag 變成子分類）；
+匯入第 1、2 版時，起訖時間和資料庫升級一樣由 time 回推。
 """
 import json
 import re
@@ -18,13 +20,13 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .db import (
-    DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, category_uuid, convert_first_tags,
-    utc_now,
+    DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, category_uuid, check_times,
+    convert_first_tags, utc_now,
 )
 
 FORMAT = "reporttool-bundle"
-FORMAT_VERSION = 2
-SUPPORTED_VERSIONS = (1, 2)
+FORMAT_VERSION = 3
+SUPPORTED_VERSIONS = (1, 2, 3)
 
 _TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -49,6 +51,8 @@ def _entry_record(db: Database, row) -> dict:
         "uuid": row["uuid"],
         "date": row["date"],
         "time": row["time"],
+        "start_time": row["start_time"],
+        "end_time": row["end_time"],
         "title": row["title"],
         "text": row["text"],
         "status": row["status"],
@@ -134,6 +138,12 @@ def validate(data: dict):
         _require(isinstance(name, str) and name, "紀錄缺少 uuid")
         _require(_DATE.match(e.get("date") or ""), f"紀錄 {name} 的日期格式錯誤")
         _require(_CLOCK.match(e.get("time") or ""), f"紀錄 {name} 的時間格式錯誤")
+        if data["version"] >= 3:
+            try:
+                check_times(e.get("start_time"), e.get("end_time"))
+                _require(e["start_time"], "")
+            except (ValueError, TypeError, KeyError):
+                raise BundleError(f"紀錄 {name} 的起訖時間不正確") from None
         _require(e.get("status") in STATUSES or e.get("status") in LEGACY_STATUSES, f"紀錄 {name} 的狀態不正確")
         _require(isinstance(e.get("text"), str), f"紀錄 {name} 缺少內容")
         _require(isinstance(e.get("title", ""), str), f"紀錄 {name} 的標題格式錯誤")
@@ -280,21 +290,30 @@ def _merge_category_v1(db: Database, c: dict, stats: dict):
     stats["categories"] += 1
 
 
-def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list, resolve_category) -> int | None:
-    """合併一筆紀錄，回傳寫入的本機 id（沒有寫入時回傳 None）。"""
+def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: list, resolve_category,
+                 derive: list) -> int | None:
+    """合併一筆紀錄，回傳寫入的本機 id（沒有寫入時回傳 None）。需要回推起始時間的 uuid 加進 derive。"""
     # 舊資料包沒有這些欄位：當作沒有標題、預設優先順序
     e = {**e, "title": e.get("title", ""), "priority": e.get("priority", DEFAULT_PRIORITY),
          "status": LEGACY_STATUSES.get(e["status"], e["status"])}
     row = db.conn.execute("SELECT * FROM entries WHERE uuid=?", (e["uuid"],)).fetchone()
+    if "start_time" not in e:  # 第 1、2 版：本機有同一筆而且日期時間沒變就沿用本機的起訖，否則之後回推
+        if row and (row["date"], row["time"]) == (e["date"], e["time"]):
+            e = {**e, "start_time": row["start_time"], "end_time": row["end_time"]}
+        else:
+            e = {**e, "start_time": e["time"], "end_time": e["time"]}
+            if not e["deleted_at"]:
+                derive.append(e["uuid"])
     if row and not _incoming_wins(_entry_record(db, row), e):
         return None
 
     if e["deleted_at"]:
         if row is None:
             db.conn.execute(
-                "INSERT INTO entries (uuid, date, time, text, status, created_at, updated_at, deleted_at)"
-                " VALUES (?, ?, ?, '', ?, ?, ?, ?)",
-                (e["uuid"], e["date"], e["time"], e["status"], e["created_at"], e["updated_at"], e["deleted_at"]))
+                "INSERT INTO entries (uuid, date, time, start_time, end_time, text, status, created_at, updated_at,"
+                " deleted_at) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
+                (e["uuid"], e["date"], e["time"], e["start_time"], e["end_time"], e["status"], e["created_at"],
+                 e["updated_at"], e["deleted_at"]))
         else:
             removed_files += db._tombstone(row["id"], e["updated_at"])
             stats["deleted"] += 1
@@ -303,19 +322,19 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
     category_id = resolve_category(e.get("category"), e["updated_at"])
     if row is None:
         entry_id = db.conn.execute(
-            "INSERT INTO entries (uuid, date, time, title, text, status, priority, category_id, created_at,"
-            " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (e["uuid"], e["date"], e["time"], e["title"], e["text"], e["status"], e["priority"], category_id,
-             e["created_at"], e["updated_at"])).lastrowid
+            "INSERT INTO entries (uuid, date, time, start_time, end_time, title, text, status, priority, category_id,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (e["uuid"], e["date"], e["time"], e["start_time"], e["end_time"], e["title"], e["text"], e["status"],
+             e["priority"], category_id, e["created_at"], e["updated_at"])).lastrowid
         old_tags, old_images = set(), {}
         stats["added"] += 1
     else:
         entry_id = row["id"]
         db.conn.execute(
-            "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, priority=?, category_id=?,"
-            " updated_at=?, deleted_at=NULL WHERE id=?",
-            (e["date"], e["time"], e["title"], e["text"], e["status"], e["priority"], category_id,
-             e["updated_at"], entry_id))
+            "UPDATE entries SET date=?, time=?, start_time=?, end_time=?, title=?, text=?, status=?, priority=?,"
+            " category_id=?, updated_at=?, deleted_at=NULL WHERE id=?",
+            (e["date"], e["time"], e["start_time"], e["end_time"], e["title"], e["text"], e["status"],
+             e["priority"], category_id, e["updated_at"], entry_id))
         old_tags = {r["tag"] for r in db.conn.execute("SELECT tag FROM entry_tags WHERE entry_id=?", (entry_id,))}
         old_images = {r["path"]: r["id"] for r in db.conn.execute(
             "SELECT id, path FROM images WHERE entry_id=?", (entry_id,))}
@@ -349,6 +368,17 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
     return entry_id
 
 
+def _derive_start_times(db: Database, uuids: list[str]):
+    """第 1、2 版的紀錄：結束＝time，起始＝同一天前一則的結束（沒有就是 time）。不更新 updated_at。
+
+    結束時間已經都是 time，所以處理順序不影響結果。"""
+    for entry_uuid in uuids:
+        row = db.conn.execute(f"SELECT id, date, time FROM entries WHERE uuid=? AND {LIVE}", (entry_uuid,)).fetchone()
+        if row:
+            start = db.previous_end(row["date"], row["time"], row["id"]) or row["time"]
+            db.conn.execute("UPDATE entries SET start_time=? WHERE id=?", (start, row["id"]))
+
+
 def merge(db: Database, data: dict, read_image) -> dict:
     """把另一台裝置的 snapshot 合併進本機。read_image(相對路徑) 回傳圖片內容 bytes，沒有則 None。"""
     validate(data)
@@ -363,13 +393,14 @@ def merge(db: Database, data: dict, read_image) -> dict:
         else:
             mapping = _merge_categories(db, data.get("categories", []), stats)
             resolve = lambda node_uuid, _now: _category_by_uuid(db, node_uuid, mapping)  # noqa: E731
-        written = []
+        written, derive = [], []
         for e in data.get("entries", []):
-            entry_id = _merge_entry(db, e, read_image, stats, removed_files, resolve)
+            entry_id = _merge_entry(db, e, read_image, stats, removed_files, resolve, derive)
             if entry_id is not None:
                 written.append(entry_id)
         if legacy:  # 舊版資料包：和資料庫升級一樣，把第一個 tag 轉成子分類
             convert_first_tags(db, written)
+        _derive_start_times(db, derive)
         # 所有紀錄都進來後再接上 carried_from，前後順序不影響
         for e in data.get("entries", []):
             if e.get("carried_from"):

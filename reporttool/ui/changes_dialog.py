@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..changes import EntryChange, char_segments
+from ..db import span_text
 
 REMOVED_BG = "#ffd7d5"
 ADDED_BG = "#ccf2d1"
@@ -37,7 +38,7 @@ class ChangesDialog(QDialog):
         header = QLabel(f"這一天有 {len(changes)} 筆延續的工作，其中 {changed} 筆有更新。")
         self.list = QListWidget()
         for c in changes:
-            item = QListWidgetItem(f"{c.entry.time}　{c.entry.summary[:30]}　—　{c.summary()}")
+            item = QListWidgetItem(f"{span_text(c.entry, False)}　{c.entry.summary[:30]}　—　{c.summary()}")
             if not c.changed:
                 item.setForeground(QColor(UNCHANGED_FG))
             self.list.addItem(item)
@@ -89,8 +90,8 @@ class ChangesDialog(QDialog):
             return
         c = self.changes[row]
         self.fields.setText("變更：" + c.summary())
-        self.old_title.setText(f"{c.previous.date}　{c.previous.time}（前）")
-        self.new_title.setText(f"{c.entry.date}　{c.entry.time}（後）")
+        self.old_title.setText(f"{c.previous.date}　{span_text(c.previous, False)}（前）")
+        self.new_title.setText(f"{c.entry.date}　{span_text(c.entry, False)}（後）")
         old, new = char_segments(_full_text(c.previous), _full_text(c.entry))
         self.old_view.setHtml(segments_html(old, REMOVED_BG))
         self.new_view.setHtml(segments_html(new, ADDED_BG))

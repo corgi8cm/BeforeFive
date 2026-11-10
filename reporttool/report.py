@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image as PILImage, ImageOps
 
 from .changes import EntryChange, change_for, format_change_lines
-from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry
+from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry, hours_text, roll_up, span_text
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]+')
 _GENERATED_FILE = re.compile(r"^\d{2,}_.+\.(png|jpg)$", re.IGNORECASE)
@@ -42,24 +42,43 @@ def continued_since(db: Database, entry: Entry) -> str | None:
     return history[0].date if history else None
 
 
-def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None,
-                      change: EntryChange | None = None) -> str:
-    head = f"[{entry.time}][{STATUS_LABELS[entry.status]}][優先{entry.priority}]"
+def report_span(entry: Entry) -> str:
+    """「09:00–10:30 1.5h」；時長 0 只寫一個時間。"""
+    if entry.minutes == 0:
+        return entry.start or entry.time
+    return f"{span_text(entry, duration=False)} {hours_text(entry.minutes)}"
+
+
+def labels(entry: Entry) -> str:
+    """「[優先N][分類：X][#a #b]」"""
+    text = f"[優先{entry.priority}]"
     if entry.category:
-        head += f"[分類：{entry.category}]"
+        text += f"[分類：{entry.category}]"
     if entry.tags:
-        head += "[" + " ".join(f"#{t}" for t in entry.tags) + "]"
+        text += "[" + " ".join(f"#{t}" for t in entry.tags) + "]"
+    return text
+
+
+def entry_body(entry: Entry, image_refs: list[str], since: str | None = None, change: EntryChange | None = None,
+               title: bool = True, diff: bool = True) -> str:
+    """紀錄那一行開頭標記之後的部分：【標題】內容（多行從第二行起縮排）、延續自、附圖、和前一筆的比較。"""
     lines = entry.text.strip().replace("\r\n", "\n").split("\n")
     body = lines[0] + "".join(f"\n  {line}" for line in lines[1:])
-    if entry.title:
+    if title and entry.title:
         body = f"【{entry.title}】{body}"
     if since:
         body += f"（延續自 {since[5:]}）"
     if image_refs:
         body += "（" + "、".join(image_refs) + "）"
     if change:
-        body += format_change_lines(change)
-    return f"- {head} {body}"
+        body += format_change_lines(change, diff)
+    return body
+
+
+def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None,
+                      change: EntryChange | None = None) -> str:
+    head = f"[{report_span(entry)}][{STATUS_LABELS[entry.status]}]" + labels(entry)
+    return f"- {head} {entry_body(entry, image_refs, since, change)}"
 
 
 def image_definitions(definitions: list[str]) -> str:
@@ -87,6 +106,31 @@ def category_info_lines(db: Database, entries: list[Entry]) -> list[str]:
                ([f"進度 {n.progress}%"] if n.progress is not None else [])
         lines.append(f"- {n.label}" + ("：" + "、".join(info) if info else ""))
     return lines
+
+
+def hours_lines(db: Database, entries: list[Entry]) -> list[str]:
+    """工時統計：依分類樹列出每個分類（含子分類）的時數與占全部的百分比，最後是未分類與合計。
+
+    時數是 0 的分類不列；全部都是 0 時回傳空清單（整段省略）。"""
+    nodes = db.category_tree()
+    totals, uncategorized, total = roll_up(entries, {n.id: n.parent_id for n in nodes}, lambda e: e.minutes)
+    if not total:
+        return []
+
+    def share(minutes: int) -> str:
+        pct = round(minutes * 100 / total)
+        return "<1%" if pct == 0 else f"{pct}%"
+
+    lines = [f"- {n.label}：{hours_text(totals[n.id])}（{share(totals[n.id])}）" for n in nodes if totals.get(n.id)]
+    if uncategorized:
+        lines.append(f"- 未分類：{hours_text(uncategorized)}（{share(uncategorized)}）")
+    return lines + [f"- 合計：{hours_text(total)}"]
+
+
+def hours_section(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    return "\n## 工時統計\n（每個分類都包含子分類；時段重疊的紀錄各自計算，沒有扣除重疊）\n" + "\n".join(lines) + "\n"
 
 
 def category_section(category_lines: list[str]) -> str:
@@ -189,25 +233,98 @@ def generate_report(db: Database, date: str, output_root, instructions: str, max
 WEEKDAYS = "一二三四五六日"
 
 
-def date_heading(date: str) -> str:
-    d = datetime.strptime(date, "%Y-%m-%d")
-    return f"### {date}（週{WEEKDAYS[d.weekday()]}）"
+def day_tag(date: str) -> str:
+    """「11-02（一）」"""
+    return f"{date[5:]}（{WEEKDAYS[datetime.strptime(date, '%Y-%m-%d').weekday()]}）"
 
 
-def build_range_markdown(start: str, end: str, instructions: str, entry_lines: list[tuple[str, str]],
-                         definitions: list[str] = (), category_lines: list[str] = ()) -> str:
-    """entry_lines：依時間排序的（日期, 紀錄那一行）。每天一個小標題，沒有紀錄的日子不列出。"""
-    days: dict[str, list[str]] = {}
-    for date, line in entry_lines:
-        days.setdefault(date, []).append(line)
-    if days:
-        records = "\n\n".join(date_heading(d) + "\n" + "\n".join(lines) for d, lines in days.items())
-    else:
-        records = "（這段期間沒有紀錄）"
+def _order(entry: Entry) -> tuple:
+    return entry.date, entry.start, entry.time, entry.id
+
+
+@dataclass
+class Work:
+    """範圍整理中的一件工作：同一條延續鏈（含分岔）在範圍內的紀錄，依時間排列。"""
+    entries: list[Entry]
+    latest: list[Entry]  # 各分岔最新的那筆（沒有分岔就只有一筆），依時間排列
+
+    @property
+    def head(self) -> Entry:
+        """代表這件工作的紀錄：範圍內最新的那筆（分類、優先、tag 以它為準）。"""
+        return max(self.entries, key=_order)
+
+    @property
+    def minutes(self) -> int:
+        return sum(e.minutes for e in self.entries)
+
+
+def group_works(db: Database, entries: list[Entry]) -> list[Work]:
+    """把範圍內的紀錄依延續鏈分成一件一件的工作，依每件工作最早那筆的時間排列。
+
+    中間有紀錄被刪除、或在範圍外時，仍沿著 carried_from 串在一起。"""
+    parent = {r["id"]: r["carried_from"] for r in db.conn.execute("SELECT id, carried_from FROM entries")}
+
+    def ancestors(i):
+        seen = []
+        while parent.get(i) is not None and parent[i] in parent and parent[i] not in seen and parent[i] != i:
+            i = parent[i]
+            seen.append(i)
+        return seen
+
+    groups: dict[int, list[Entry]] = {}
+    lineage = {}
+    for e in sorted(entries, key=_order):
+        lineage[e.id] = ancestors(e.id)
+        root = lineage[e.id][-1] if lineage[e.id] else e.id
+        groups.setdefault(root, []).append(e)
+    works = []
+    for members in groups.values():
+        ids = {e.id for e in members}
+        has_later = {a for e in members for a in lineage[e.id] if a in ids}
+        works.append(Work(members, [e for e in members if e.id not in has_later]))
+    return sorted(works, key=lambda w: _order(w.entries[0]))
+
+
+def _indent(text: str, prefix: str = "  ") -> str:
+    return "\n".join(prefix + line for line in text.split("\n"))
+
+
+def format_work(db: Database, work: Work, refs: dict[int, list[str]]) -> str:
+    """一件工作在範圍整理中的寫法。只有一筆時和單日的一行相同，前面多日期；
+    好幾筆時先寫一行工作摘要，底下依時間列出每一筆（日期、時段、狀態、內容與變化）。"""
+    first = work.entries[0]
+    since = continued_since(db, first)
+    if len(work.entries) == 1:
+        line = format_entry_line(first, refs[first.id], since, change_for(db, first))
+        return f"- [{day_tag(first.date)}]" + line[2:]
+
+    head = work.head
+    statuses = "、".join(dict.fromkeys(STATUS_LABELS[e.status] for e in work.latest))
+    # 工作名稱：用最新那筆的標題；有分岔時最新那筆只是其中一支，改用範圍內最早那筆的
+    named = first if len(work.latest) > 1 else head
+    name = named.title or named.summary
+    line = f"- 【{name}】[最新：{statuses}]" + labels(head)
+    if since:
+        line += f"（延續自 {since[5:]}）"
+    total = f"，合計 {hours_text(work.minutes)}" if work.minutes else ""
+    line += f"（範圍內 {len(work.entries)} 筆{total}）"
+    for e in work.entries:
+        # 每一筆只寫日期、時段、狀態；標題和工作名稱不同時才寫。前後內容都列出來了，比較只寫摘要
+        sub_head = f"[{day_tag(e.date)}][{report_span(e)}][{STATUS_LABELS[e.status]}]"
+        body = entry_body(e, refs[e.id], None, change_for(db, e), title=e.title != name, diff=False)
+        line += "\n" + _indent(f"- {sub_head} {body}")
+    return line
+
+
+def build_range_markdown(start: str, end: str, instructions: str, work_lines: list[str], n_entries: int,
+                         n_days: int, definitions: list[str] = (), category_lines: list[str] = (),
+                         hour_lines: list[str] = ()) -> str:
+    records = "\n".join(work_lines) if work_lines else "（這段期間沒有紀錄）"
     return (
         f"# 工作回報整理請求（{start} ~ {end}）\n\n"
         f"## 指示\n{instructions.strip()}\n\n"
-        f"## 期間工作紀錄（共 {len(entry_lines)} 筆，{len(days)} 天）\n{records}\n"
+        f"## 期間工作紀錄（共 {len(work_lines)} 件工作、{n_entries} 筆紀錄，{n_days} 天）\n{records}\n"
+        + hours_section(list(hour_lines))
         + category_section(list(category_lines))
         + image_definitions(list(definitions))
     )
@@ -221,11 +338,20 @@ def range_folder(output_root, start: str, end: str) -> Path:
 
 def generate_range_report(db: Database, start: str, end: str, output_root, instructions: str,
                           max_side: int = 1600) -> Path:
-    """整理 start～end（含頭尾）的所有紀錄，附圖編號跨日連續。"""
+    """整理 start～end（含頭尾）的所有紀錄：同一件工作（延續鏈）只列一次，附圖編號依輸出順序連續。"""
     folder = range_folder(output_root, start, end)
     entries = db.entries_between(start, end)
-    written, definitions = _write_entries(db, entries, folder, max_side)
-    md = build_range_markdown(start, end, instructions, [(e.date, line) for e, line in written], definitions,
-                              category_info_lines(db, entries))
+    works = group_works(db, entries)
+    _clear_previous_output(folder)
+    refs, definitions = {}, []
+    for entry, images in number_images(db, [e for w in works for e in w.entries]):
+        for img in images:
+            if img.available:
+                resize_image(img.src, folder / img.filename, max_side)
+                definitions.append(img.definition)
+        refs[entry.id] = [img.md_ref for img in images]
+    md = build_range_markdown(start, end, instructions, [format_work(db, w, refs) for w in works], len(entries),
+                              len({e.date for e in entries}), definitions, category_info_lines(db, entries),
+                              hours_lines(db, entries))
     (folder / "report.md").write_text(md, encoding="utf-8")
     return folder
