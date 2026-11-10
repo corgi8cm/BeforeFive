@@ -3,15 +3,13 @@ from datetime import date as Date
 from html import escape
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QSplitter, QStackedWidget,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QSplitter, QTextBrowser,
+    QVBoxLayout, QWidget,
 )
 
-from ..changes import char_segments, compare
 from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry
-from .changes_dialog import ADDED_BG, REMOVED_BG, _full_text, segments_html
 from .entry_dialog import STATUS_COLORS
 
 WEEKDAYS = "一二三四五六日"
@@ -99,7 +97,7 @@ class HistoryPreview(QWidget):
 
 
 class HistoryDialog(QDialog):
-    """右鍵「查看歷程…」：左邊列出這件工作的每一則，右邊看完整內容，或和前一則比較。"""
+    """右鍵「查看歷程…」：左邊列出這件工作的每一則，右邊看完整內容與附圖，可以同時顯示前一則。"""
 
     def __init__(self, db: Database, entry_id: int, parent=None):
         super().__init__(parent)
@@ -108,9 +106,9 @@ class HistoryDialog(QDialog):
         latest = self.chain[0] if self.chain else None
         self.setWindowTitle(f"工作歷程：{latest.summary[:40]}" if latest else "工作歷程")
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.resize(1180, 700)
+        self.resize(1280, 720)
 
-        self.header = QLabel(f"共 {len(self.chain)} 則（新的在上面）；勾選「與前一則比較」可以看出改了哪些字。")
+        self.header = QLabel(f"共 {len(self.chain)} 則（新的在上面）。")
         self.list = QListWidget()
         for e in self.chain:
             item = QListWidgetItem(f"{day_label(e)}　{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}　{e.summary[:30]}")
@@ -123,42 +121,49 @@ class HistoryDialog(QDialog):
             self.list.addItem(item)
         self.list.currentRowChanged.connect(self.show_row)
 
-        self.single = QTextBrowser()
-        self.single.setOpenExternalLinks(True)
-        self.fields = QLabel()
-        self.fields.setWordWrap(True)
-        self.old_title, self.new_title = QLabel(), QLabel()
-        self.old_view, self.new_view = QTextBrowser(), QTextBrowser()
-        panes = QHBoxLayout()
-        for title, view in ((self.old_title, self.old_view), (self.new_title, self.new_view)):
-            col = QVBoxLayout()
+        # 右邊：前一則（可以關掉）｜這一則，各自是完整內容與附圖
+        self.prev_title, self.this_title = QLabel(), QLabel()
+        self.prev_view, self.this_view = QTextBrowser(), QTextBrowser()
+        self.prev_pane = QWidget()
+        this_pane = QWidget()
+        for pane, title, view in ((self.prev_pane, self.prev_title, self.prev_view),
+                                  (this_pane, self.this_title, self.this_view)):
             title.setStyleSheet("font-weight:bold;")
-            title.setWordWrap(True)
+            view.setOpenExternalLinks(True)
+            col = QVBoxLayout(pane)
+            col.setContentsMargins(0, 0, 0, 0)
             col.addWidget(title)
             col.addWidget(view)
-            panes.addLayout(col)
-        diff = QWidget()
-        diff_layout = QVBoxLayout(diff)
-        diff_layout.setContentsMargins(0, 0, 0, 0)
-        diff_layout.addWidget(self.fields)
-        diff_layout.addLayout(panes)
-        diff_layout.addWidget(QLabel(f'<span style="background:{REMOVED_BG};">刪除的字</span>　'
-                                     f'<span style="background:{ADDED_BG};">新增的字</span>'))
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self.single)
-        self.stack.addWidget(diff)
+        panes = QSplitter(Qt.Horizontal)
+        panes.addWidget(self.prev_pane)
+        panes.addWidget(this_pane)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.list)
-        splitter.addWidget(self.stack)
-        splitter.setSizes([420, 760])
+        splitter.addWidget(panes)
+        splitter.setSizes([380, 900])
 
-        self.compare_box = QCheckBox("與前一則比較")
-        self.compare_box.toggled.connect(lambda _c: self.show_row(self.list.currentRow()))
+        self.prev_box = QCheckBox("同時顯示前一則")
+        self.prev_box.setChecked(True)
+        self.prev_box.toggled.connect(lambda _c: self.show_row(self.list.currentRow()))
+        # 往前（較舊）／往後（較新）一則；清單是新的在上面
+        self.older_btn = QPushButton("◀ 往前一則")
+        self.older_btn.setToolTip("看較舊的一則（Alt+←）")
+        self.older_btn.clicked.connect(lambda: self.step(+1))
+        self.newer_btn = QPushButton("往後一則 ▶")
+        self.newer_btn.setToolTip("看較新的一則（Alt+→）")
+        self.newer_btn.clicked.connect(lambda: self.step(-1))
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self.step(+1))
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self.step(-1))
+        self.position = QLabel()
         close = QPushButton("關閉")
         close.clicked.connect(self.close)
         bottom = QHBoxLayout()
-        bottom.addWidget(self.compare_box)
+        bottom.addWidget(self.prev_box)
+        bottom.addStretch()
+        bottom.addWidget(self.older_btn)
+        bottom.addWidget(self.position)
+        bottom.addWidget(self.newer_btn)
         bottom.addStretch()
         bottom.addWidget(close)
 
@@ -171,26 +176,26 @@ class HistoryDialog(QDialog):
         if self.chain:
             self.list.setCurrentRow(rows[0] if rows else 0)
 
+    def step(self, delta: int):
+        """+1 往前（較舊），-1 往後（較新）；到頭就停住。"""
+        row = self.list.currentRow() + delta
+        if 0 <= row < len(self.chain):
+            self.list.setCurrentRow(row)
+
     def show_row(self, row: int):
         if row < 0 or row >= len(self.chain):
             return
+        self.older_btn.setEnabled(row + 1 < len(self.chain))
+        self.newer_btn.setEnabled(row > 0)
+        # 由舊到新數第幾則
+        self.position.setText(f"第 {len(self.chain) - row} / {len(self.chain)} 則")
         entry = self.chain[row]
         previous = self.chain[row + 1] if row + 1 < len(self.chain) else None
-        if not self.compare_box.isChecked():
-            self.stack.setCurrentIndex(0)
-            self.single.setHtml(entry_html(self.db, entry))
-            return
-        self.stack.setCurrentIndex(1)
+        self.this_title.setText("這一則")
+        self.this_view.setHtml(entry_html(self.db, entry))
+        self.prev_pane.setVisible(self.prev_box.isChecked())
+        self.prev_title.setText("前一則")
         if previous is None:
-            self.fields.setText("這是第一則，沒有可以比較的前一則。")
-            self.old_title.setText("")
-            self.new_title.setText(day_label(entry))
-            self.old_view.setHtml("")
-            self.new_view.setPlainText(_full_text(entry))
-            return
-        self.fields.setText("變更：" + compare(previous, entry).summary())
-        self.old_title.setText(f"{day_label(previous)}（前一則）")
-        self.new_title.setText(f"{day_label(entry)}（這一則）")
-        old, new = char_segments(_full_text(previous), _full_text(entry))
-        self.old_view.setHtml(segments_html(old, REMOVED_BG))
-        self.new_view.setHtml(segments_html(new, ADDED_BG))
+            self.prev_view.setHtml('<span style="color:#888;">這是第一則，沒有前一則。</span>')
+        else:
+            self.prev_view.setHtml(entry_html(self.db, previous))

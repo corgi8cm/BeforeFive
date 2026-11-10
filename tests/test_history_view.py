@@ -62,18 +62,31 @@ def test_preview_shows_whole_chain(qapp, db, tmp_path):
     assert win.preview.isHidden()
 
 
-def test_history_dialog_compare(qapp, db):
+def test_history_dialog_shows_previous(qapp, db):
     dlg = HistoryDialog(db, db.ids["b"])
     assert dlg.list.count() == 3
     assert dlg.list.currentRow() == 1  # 停在右鍵的那一則（新的在上面）
-    assert "改好 timeout，送 PR" in dlg.single.toPlainText()
-
-    dlg.compare_box.setChecked(True)
-    assert "（前一則）" in dlg.old_title.text() and "11-03" in dlg.old_title.text()
-    assert "找到 timeout 的原因" in dlg.old_view.toPlainText()
-    assert "改好 timeout，送 PR" in dlg.new_view.toPlainText()
+    assert "改好 timeout，送 PR" in dlg.this_view.toPlainText()
+    assert "找到 timeout 的原因" in dlg.prev_view.toPlainText()  # 預設同時顯示前一則的完整內容
 
     dlg.list.setCurrentRow(0)
-    assert "狀態" in dlg.fields.text()  # 進行中 → 完成
+    assert "PR 合併，已上線" in dlg.this_view.toPlainText() and "改好 timeout" in dlg.prev_view.toPlainText()
     dlg.list.setCurrentRow(2)
-    assert "第一則" in dlg.fields.text()
+    assert "沒有前一則" in dlg.prev_view.toPlainText()
+
+    dlg.prev_box.setChecked(False)
+    assert dlg.prev_pane.isHidden()
+
+
+def test_history_dialog_step_older_and_newer(qapp, db):
+    dlg = HistoryDialog(db, db.ids["b"])
+    assert dlg.position.text() == "第 2 / 3 則"
+    dlg.older_btn.click()
+    assert "找到 timeout 的原因" in dlg.this_view.toPlainText() and dlg.position.text() == "第 1 / 3 則"
+    assert not dlg.older_btn.isEnabled()
+    dlg.step(+1)  # 到最舊就停住
+    assert dlg.list.currentRow() == 2
+    dlg.newer_btn.click()
+    dlg.newer_btn.click()
+    assert "PR 合併，已上線" in dlg.this_view.toPlainText() and dlg.position.text() == "第 3 / 3 則"
+    assert not dlg.newer_btn.isEnabled() and dlg.older_btn.isEnabled()
