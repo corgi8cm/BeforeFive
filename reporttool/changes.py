@@ -87,9 +87,11 @@ def changes_for(db: Database, entries: list[Entry]) -> list[EntryChange]:
     return [c for c in (change_for(db, e) for e in entries) if c]
 
 
-def format_change_lines(change: EntryChange) -> str:
-    """report.md 中接在紀錄後面的幾行（含開頭換行）。"""
+def format_change_lines(change: EntryChange, diff: bool = True) -> str:
+    """report.md 中接在紀錄後面的幾行（含開頭換行）。diff=False 只寫摘要那一行（前後內容已經都列出來時）。"""
     text = f"\n  ⇄ 與 {change.previous_label} 相比：{change.summary()}"
+    if not diff:
+        return text
     return text + "".join(f"\n    {side}：{line}" for side, line in change.text_diff())
 
 

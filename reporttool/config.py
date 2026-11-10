@@ -26,13 +26,14 @@ DEFAULT_INSTRUCTIONS = """\
 - 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
 - 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
 - 每項開頭的 [09:00–10:30 1.5h] 是這件事的時段與花費時數，只有一個時間的表示沒有記下時長；需要時可以帶出花了多少時間
+- 範圍整理中，同一件工作只列一次：【工作名稱】[最新：狀態] 底下縮排列出範圍內每一筆的進展，請整合成一項說明這段期間的進展，狀態以「最新」為準
 - 只用紀錄和圖片中的內容，不要補充或編造
 - 參考圖片內容讓描述更具體，但保留（附圖N）標記
 - 用 Slack mrkdwn 格式，語氣簡潔、專業
 """
 
 _LINES = DEFAULT_INSTRUCTIONS.splitlines()
-CATEGORY_LINE, TAG_LINE, ORDER_LINE, PROGRESS_LINE, CONTINUED_LINE, CHANGES_LINE, TIME_LINE = _LINES[:7]
+CATEGORY_LINE, TAG_LINE, ORDER_LINE, PROGRESS_LINE, CONTINUED_LINE, CHANGES_LINE, TIME_LINE, RANGE_LINE = _LINES[:8]
 # 舊版預設的那幾行要換成什麼。instructions.md 只在第一次執行時建立，程式更新後要自動換成新版；
 # 使用者自己改過的行對不上，就不會動。
 OLD_LINES = {
@@ -59,6 +60,8 @@ def upgrade_instructions(text: str) -> str:
         lines.insert(lines.index(CONTINUED_LINE) + 1, CHANGES_LINE)
     if TIME_LINE not in lines and CHANGES_LINE in lines:  # 3.0.0：時段與時數
         lines.insert(lines.index(CHANGES_LINE) + 1, TIME_LINE)
+    if RANGE_LINE not in lines and TIME_LINE in lines:  # 3.0.0：範圍整理合併延續鏈
+        lines.insert(lines.index(TIME_LINE) + 1, RANGE_LINE)
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 

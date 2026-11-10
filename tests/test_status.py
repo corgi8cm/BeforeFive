@@ -100,8 +100,8 @@ OLDER_INSTRUCTIONS = V1_INSTRUCTIONS.replace(
 
 
 def _v2_instructions():
-    from reporttool.config import DEFAULT_INSTRUCTIONS, TIME_LINE
-    return DEFAULT_INSTRUCTIONS.replace(TIME_LINE + "\n", "")
+    from reporttool.config import DEFAULT_INSTRUCTIONS, RANGE_LINE, TIME_LINE
+    return DEFAULT_INSTRUCTIONS.replace(TIME_LINE + "\n", "").replace(RANGE_LINE + "\n", "")
 
 
 @pytest.mark.parametrize("old", [V1_INSTRUCTIONS, OLDER_INSTRUCTIONS, _v2_instructions()])

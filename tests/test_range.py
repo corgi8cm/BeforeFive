@@ -25,7 +25,7 @@ def add(db, date, time, text, images=()):
     return db.save_entry(Entry(None, date, time, text, "done", images=list(images)))
 
 
-def test_range_report_groups_by_day_and_numbers_images_across_days(tmp_path):
+def test_range_report_lists_by_time_and_numbers_images_across_days(tmp_path):
     db = Database(tmp_path / "data")
     PILImage.new("RGB", (10, 10)).save(tmp_path / "a.png")
     add(db, "2026-10-30", "09:00", "範圍外")
@@ -40,15 +40,63 @@ def test_range_report_groups_by_day_and_numbers_images_across_days(tmp_path):
     assert md == (
         "# 工作回報整理請求（2026-11-02 ~ 2026-11-08）\n\n"
         "## 指示\n指示\n\n"
-        "## 期間工作紀錄（共 3 筆，2 天）\n"
-        "### 2026-11-02（週一）\n"
-        "- [09:00][完成][優先3] 週一早上\n"
-        "- [14:00][完成][優先3] 週一下午（![附圖1]）\n\n"
-        "### 2026-11-04（週三）\n"
-        "- [10:00][完成][優先3] 週三（![附圖2]）\n"
+        "## 期間工作紀錄（共 3 件工作、3 筆紀錄，2 天）\n"
+        "- [11-02（一）][09:00][完成][優先3] 週一早上\n"
+        "- [11-02（一）][14:00][完成][優先3] 週一下午（![附圖1]）\n"
+        "- [11-04（三）][10:00][完成][優先3] 週三（![附圖2]）\n"
         "\n[附圖1]: <01_週一下午.png>\n[附圖2]: <02_週三.png>\n"
     )
     assert sorted(p.name for p in folder.iterdir()) == ["01_週一下午.png", "02_週三.png", "report.md"]
+
+
+def chain_db(tmp_path):
+    """10-30 開始的工作，11-02、11-03 延續，11-03 又分岔出一支；中間 11-02 那筆被刪掉也照樣串起來。"""
+    db = Database(tmp_path / "data")
+    dev = db.categories()[0][0]
+    meeting = db.categories()[1][0]
+    a = db.save_entry(Entry(None, "2026-10-30", "16:00", "開始查", "doing", ["bug"], title="登入 timeout",
+                            category_id=meeting, start="15:00", end="16:00"))
+    b = db.save_entry(Entry(None, "2026-11-02", "11:00", "查 log", "doing", ["bug"], title="登入 timeout",
+                            carried_from=a, category_id=meeting, start="09:00", end="11:00"))
+    gone = db.save_entry(Entry(None, "2026-11-02", "12:00", "刪掉的", "doing", carried_from=b, start="11:00",
+                               end="12:00"))
+    db.save_entry(Entry(None, "2026-11-02", "10:00", "週會", "done", title="週會", start="09:30", end="10:00"))
+    c = db.save_entry(Entry(None, "2026-11-03", "15:00", "改設定檔", "done", ["bug", "設定"], title="登入 timeout",
+                            carried_from=gone, priority=1, category_id=dev, start="13:00", end="15:00"))
+    db.delete_entry(gone)
+    db.save_entry(Entry(None, "2026-11-03", "16:00", "補測試", "doing", title="補測試", carried_from=b,
+                        category_id=dev, start="15:00", end="16:00"))
+    return db, c
+
+
+def test_range_report_merges_chain(tmp_path):
+    db, _ = chain_db(tmp_path)
+    md = (generate_range_report(db, "2026-11-02", "2026-11-08", tmp_path / "out", "指示") / "report.md").read_text(
+        encoding="utf-8")
+    records = md[md.index("## 期間工作紀錄"):md.index("\n## 分類資訊")]
+    assert records == (
+        "## 期間工作紀錄（共 2 件工作、4 筆紀錄，2 天）\n"
+        # 分類、優先、tag 用範圍內最新那筆；分岔各自的最新狀態都列；有分岔時名稱用範圍內最早那筆
+        "- 【登入 timeout】[最新：完成、進行中][優先3][分類：開發]（延續自 10-30）（範圍內 3 筆，合計 5h）\n"
+        "  - [11-02（一）][09:00–11:00 2h][進行中] 查 log\n"
+        "    ⇄ 與 10-30 相比：內容有更新\n"
+        "  - [11-03（二）][13:00–15:00 2h][完成] 改設定檔\n"
+        "  - [11-03（二）][15:00–16:00 1h][進行中] 【補測試】補測試\n"
+        "    ⇄ 與 11-02 相比：標題 登入 timeout→補測試；分類 會議→開發；tag -#bug；內容有更新\n"
+        "- [11-02（一）][09:30–10:00 0.5h][完成][優先3] 【週會】週會\n"
+    )
+
+
+def test_range_report_single_chain_uses_latest(tmp_path):
+    db, _ = chain_db(tmp_path)
+    md = (generate_range_report(db, "2026-11-03", "2026-11-03", tmp_path / "out", "指示") / "report.md").read_text(
+        encoding="utf-8")
+    # 範圍內這件工作的兩筆不相連（共同的上一筆在範圍外），仍是同一件工作
+    assert "- 【登入 timeout】[最新：完成、進行中]" in md and "（範圍內 2 筆，合計 3h）" in md
+    md = (generate_range_report(db, "2026-11-01", "2026-11-02", tmp_path / "out", "指示") / "report.md").read_text(
+        encoding="utf-8")
+    # 範圍內只有一筆：和單日的寫法相同，前面多日期
+    assert "- [11-02（一）][09:00–11:00 2h][進行中][優先3][分類：會議][#bug] 【登入 timeout】查 log（延續自 10-30）" in md
 
 
 def test_empty_range(tmp_path):
