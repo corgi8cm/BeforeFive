@@ -5,10 +5,10 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from PySide6.QtCore import QByteArray, QDate, QItemSelectionModel, QMimeData, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
-    QInputDialog, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator, QVBoxLayout, QWidget,
 )
 
@@ -27,6 +27,7 @@ from .manage_dialog import (
 )
 from .progress_delegate import PROGRESS_ROLE, SETTABLE_ROLE, ProgressDelegate
 from .range_dialog import RangeDialog
+from .search_dialog import SearchDialog
 
 ALL, UNCATEGORIZED = "all", "none"
 ALL_LABEL = "全部"
@@ -179,6 +180,7 @@ class MainWindow(QMainWindow):
         self.db = db
         self.settings = settings
         self._quick_dialog = None
+        self._search_dialog = None
         self._nodes: list[Category] = []
         self.setWindowTitle(f"下班前 v{__version__}")
         self.resize(1100, 600)
@@ -298,6 +300,15 @@ class MainWindow(QMainWindow):
         bottom.addWidget(button("編輯", self.edit_selected))
         bottom.addWidget(button("刪除", self.delete_selected))
         bottom.addWidget(button("追加今日進度", self.follow_up_selected, "替選取的工作新增今天的進度，會串成同一件工作的歷程"))
+        bottom.addSpacing(12)
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("🔍 搜尋紀錄（Ctrl+F）")
+        self.search_box.setToolTip("不限日期，找標題、內容、tag、分類；按 Enter 開啟結果")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.setFixedWidth(200)
+        self.search_box.returnPressed.connect(lambda: self.open_search(self.search_box.text()))
+        bottom.addWidget(self.search_box)
+        QShortcut(QKeySequence.Find, self, activated=lambda: (self.search_box.setFocus(), self.search_box.selectAll()))
         bottom.addStretch()
         bottom.addWidget(button("管理分類與標籤", self.manage))
         bottom.addWidget(button("編輯 AI 指示", lambda: open_path(settings.instructions_path)))
@@ -672,6 +683,41 @@ class MainWindow(QMainWindow):
         menu.addAction("編輯…", self.edit_selected)
         menu.addAction("刪除", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def open_search(self, query: str = "") -> SearchDialog:
+        """另開搜尋視窗（不會擋住主視窗）；已經開著就換關鍵字。"""
+        if self._search_dialog is None:
+            self._search_dialog = SearchDialog(self.db, query.strip(), self)
+            self._search_dialog.entry_activated.connect(self.go_to_entry)
+            self._search_dialog.destroyed.connect(lambda: setattr(self, "_search_dialog", None))
+        else:
+            self._search_dialog.search(query.strip())
+        self._search_dialog.show()
+        self._search_dialog.raise_()
+        self._search_dialog.activateWindow()
+        return self._search_dialog
+
+    def go_to_entry(self, entry_id: int):
+        """跳到這筆紀錄的那一天並選取它；目前的分類篩選看不到它時改成「全部」。"""
+        entry = self.db.get_entry(entry_id)
+        if entry is None:
+            return
+        if not self._visible(entry, self.selected_category()):
+            self.select_category(ALL)
+        self.date_edit.setDate(QDate.fromString(entry.date, "yyyy-MM-dd"))  # 日期沒變時不會觸發 refresh
+        for item in self.entry_items():
+            if self._entry_id(item) == entry_id:
+                parent = item.parent()
+                while parent:  # 收合的群組要展開才看得到
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+                break
+        self.select_entries([entry_id])
+        current = self.tree.currentItem()
+        if current:
+            self.tree.scrollToItem(current)
+        self.raise_()
+        self.activateWindow()
 
     def show_history(self, entry_id: int):
         """另開視窗顯示這件工作的完整歷程（不會擋住主視窗）。"""

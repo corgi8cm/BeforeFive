@@ -596,6 +596,35 @@ class Database:
             (start, end)).fetchall()
         return [self._load(r) for r in rows]
 
+    # ---- 搜尋 ----
+
+    def search(self, query: str, limit: int = 500) -> list[Entry]:
+        """不限日期找紀錄：用空白分隔的每個詞都要出現在標題、內容、tag 或分類路徑其中之一（不分大小寫）。
+        「#詞」只找 tag。依日期、起始時間排列，新的在前。"""
+        terms = query.split()
+        if not terms:
+            return []
+        labels = self.categories()
+        where, params = [LIVE], []
+        for term in terms:
+            tag_only = term.startswith("#") and len(term) > 1
+            word = term[1:] if tag_only else term
+            like = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            tag_match = ("EXISTS (SELECT 1 FROM entry_tags t WHERE t.entry_id = entries.id"
+                         " AND t.tag LIKE ? ESCAPE '\\')")
+            if tag_only:
+                where.append(tag_match)
+                params.append(like)
+                continue
+            ids = [cid for cid, label in labels if word.casefold() in label.casefold()]
+            category_match = f"category_id IN ({', '.join('?' * len(ids))})" if ids else "0"
+            where.append(f"(title LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\' OR {tag_match} OR {category_match})")
+            params += [like, like, like, *ids]
+        rows = self.conn.execute(
+            f"SELECT * FROM entries WHERE {' AND '.join(where)}"
+            " ORDER BY date DESC, start_time DESC, time DESC, id DESC LIMIT ?", (*params, limit)).fetchall()
+        return [self._load(r) for r in rows]
+
     # ---- 標籤 ----
 
     def all_tags(self) -> list[str]:
