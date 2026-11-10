@@ -20,6 +20,7 @@ from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
+from .history_view import HistoryDialog, HistoryPreview
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import (
     PRIORITY_CHOICES, ManageDialog, ProgressDialog, ask_category_priority, delete_category_with_confirm, show_priority,
@@ -208,6 +209,11 @@ class MainWindow(QMainWindow):
         self.progress_box.setToolTip("在分類樹與分組標題顯示各分類的進度；關閉只是不顯示，已填的進度會保留")
         self.progress_box.toggled.connect(self._toggle_progress)
         top.addWidget(self.progress_box)
+        self.preview_box = QCheckBox("顯示預覽")
+        self.preview_box.setChecked(settings.show_preview)
+        self.preview_box.setToolTip("在清單下方顯示選取紀錄的完整內容；延續的工作會列出每一天的進度")
+        self.preview_box.toggled.connect(self._toggle_preview)
+        top.addWidget(self.preview_box)
         top.addStretch()
         top.addWidget(button("＋ 新增紀錄", lambda: self.new_entry(),f"全域快捷鍵：{settings.hotkey}"))
         top.addWidget(button("帶入未完成項目", self.carry_over, "把上一個有紀錄的日子中未完成（不是完成或取消）的項目帶進這一天"))
@@ -271,9 +277,20 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.sidebar, 1)
         side_layout.addLayout(side_buttons)
 
+        # 清單下方的預覽：選取紀錄的完整內容與歷程
+        self.preview = HistoryPreview(db)
+        self.preview.open_history.connect(self.show_history)
+        self.preview.setVisible(settings.show_preview)
+        self.tree.currentItemChanged.connect(lambda item, _prev: self.preview.show_entry(self._entry_id(item)))
+        right = QSplitter(Qt.Vertical)
+        right.addWidget(self.tree)
+        right.addWidget(self.preview)
+        right.setStretchFactor(0, 1)
+        right.setSizes([330, 300])
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(side_panel)
-        splitter.addWidget(self.tree)
+        splitter.addWidget(right)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([380, 820])
 
@@ -650,9 +667,21 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, s=status: self.set_status(entry_id, s))
         menu.addSeparator()
         menu.addAction("追加今日進度…", self.follow_up_selected)
+        history = menu.addAction("查看歷程…", lambda: self.show_history(entry_id))
+        history.setEnabled(len(self.db.chain(entry_id)) > 1)
         menu.addAction("編輯…", self.edit_selected)
         menu.addAction("刪除", self.delete_selected)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def show_history(self, entry_id: int):
+        """另開視窗顯示這件工作的完整歷程（不會擋住主視窗）。"""
+        dlg = HistoryDialog(self.db, entry_id, self)
+        dlg.show()
+        return dlg
+
+    def _toggle_preview(self, checked: bool):
+        self.settings.save("show_preview", checked)
+        self.preview.setVisible(checked)
 
     def set_status(self, entry_id: int, status: str):
         self.db.set_status(entry_id, status)

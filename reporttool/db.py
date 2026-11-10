@@ -440,6 +440,36 @@ class Database:
                 chain.append(current)
         return chain[::-1]
 
+    def chain(self, entry_id: int | None) -> list[Entry]:
+        """這件工作的完整歷程：同一條延續鏈上的所有紀錄（往前與往後），依日期、時間排列。
+        中間有紀錄被刪除時仍沿著它找下去，但不列出被刪除的那筆。"""
+        if entry_id is None:
+            return []
+        rows = self.conn.execute("SELECT id, carried_from FROM entries").fetchall()
+        parent = {r["id"]: r["carried_from"] for r in rows}
+        if entry_id not in parent:
+            return []
+        children: dict[int, list[int]] = {}
+        for r in rows:
+            if r["carried_from"] is not None:
+                children.setdefault(r["carried_from"], []).append(r["id"])
+        top, seen = entry_id, {entry_id}
+        while parent.get(top) is not None and parent[top] in parent and parent[top] not in seen:
+            top = parent[top]
+            seen.add(top)
+        members, stack, seen = [], [top], {top}
+        while stack:
+            i = stack.pop()
+            members.append(i)
+            for c in children.get(i, []):
+                if c not in seen:
+                    seen.add(c)
+                    stack.append(c)
+        marks = ",".join("?" * len(members))
+        found = self.conn.execute(
+            f"SELECT * FROM entries WHERE id IN ({marks}) AND {LIVE} ORDER BY date, time, id", members).fetchall()
+        return [self._load(r) for r in found]
+
     def entries_for_date(self, date: str) -> list[Entry]:
         return self.entries_between(date, date)
 
