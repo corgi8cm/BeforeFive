@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image as PILImage, ImageOps
 
 from .changes import EntryChange, change_for, format_change_lines
-from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry, hours_text, span_text
+from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry, hours_text, roll_up, span_text
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]+')
 _GENERATED_FILE = re.compile(r"^\d{2,}_.+\.(png|jpg)$", re.IGNORECASE)
@@ -106,6 +106,31 @@ def category_info_lines(db: Database, entries: list[Entry]) -> list[str]:
                ([f"進度 {n.progress}%"] if n.progress is not None else [])
         lines.append(f"- {n.label}" + ("：" + "、".join(info) if info else ""))
     return lines
+
+
+def hours_lines(db: Database, entries: list[Entry]) -> list[str]:
+    """工時統計：依分類樹列出每個分類（含子分類）的時數與占全部的百分比，最後是未分類與合計。
+
+    時數是 0 的分類不列；全部都是 0 時回傳空清單（整段省略）。"""
+    nodes = db.category_tree()
+    totals, uncategorized, total = roll_up(entries, {n.id: n.parent_id for n in nodes}, lambda e: e.minutes)
+    if not total:
+        return []
+
+    def share(minutes: int) -> str:
+        pct = round(minutes * 100 / total)
+        return "<1%" if pct == 0 else f"{pct}%"
+
+    lines = [f"- {n.label}：{hours_text(totals[n.id])}（{share(totals[n.id])}）" for n in nodes if totals.get(n.id)]
+    if uncategorized:
+        lines.append(f"- 未分類：{hours_text(uncategorized)}（{share(uncategorized)}）")
+    return lines + [f"- 合計：{hours_text(total)}"]
+
+
+def hours_section(lines: list[str]) -> str:
+    if not lines:
+        return ""
+    return "\n## 工時統計\n（每個分類都包含子分類；時段重疊的紀錄各自計算，沒有扣除重疊）\n" + "\n".join(lines) + "\n"
 
 
 def category_section(category_lines: list[str]) -> str:
@@ -292,12 +317,14 @@ def format_work(db: Database, work: Work, refs: dict[int, list[str]]) -> str:
 
 
 def build_range_markdown(start: str, end: str, instructions: str, work_lines: list[str], n_entries: int,
-                         n_days: int, definitions: list[str] = (), category_lines: list[str] = ()) -> str:
+                         n_days: int, definitions: list[str] = (), category_lines: list[str] = (),
+                         hour_lines: list[str] = ()) -> str:
     records = "\n".join(work_lines) if work_lines else "（這段期間沒有紀錄）"
     return (
         f"# 工作回報整理請求（{start} ~ {end}）\n\n"
         f"## 指示\n{instructions.strip()}\n\n"
         f"## 期間工作紀錄（共 {len(work_lines)} 件工作、{n_entries} 筆紀錄，{n_days} 天）\n{records}\n"
+        + hours_section(list(hour_lines))
         + category_section(list(category_lines))
         + image_definitions(list(definitions))
     )
@@ -324,6 +351,7 @@ def generate_range_report(db: Database, start: str, end: str, output_root, instr
                 definitions.append(img.definition)
         refs[entry.id] = [img.md_ref for img in images]
     md = build_range_markdown(start, end, instructions, [format_work(db, w, refs) for w in works], len(entries),
-                              len({e.date for e in entries}), definitions, category_info_lines(db, entries))
+                              len({e.date for e in entries}), definitions, category_info_lines(db, entries),
+                              hours_lines(db, entries))
     (folder / "report.md").write_text(md, encoding="utf-8")
     return folder

@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..changes import changes_for
 from ..config import Settings, load_instructions
-from ..db import STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, same_level_key, span_text
+from ..db import (
+    STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, hours_text, roll_up, same_level_key, span_text,
+)
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
@@ -36,7 +38,7 @@ GROUP_KEY = Qt.UserRole + 1  # 群組標題記住自己的 key，用來保留展
 SIDEBAR_KEY = Qt.UserRole + 2
 PRIORITY_COLORS = {1: "#d64545", 2: "#e08a00"}
 CATEGORY_COL, CONTENT_COL = 3, 5
-SIDE_NAME, SIDE_PRIORITY, SIDE_COUNT, SIDE_PROGRESS = 0, 1, 2, 3
+SIDE_NAME, SIDE_PRIORITY, SIDE_COUNT, SIDE_HOURS, SIDE_PROGRESS = 0, 1, 2, 3, 4
 
 
 def sort_entries(entries: list[Entry]) -> list[Entry]:
@@ -228,7 +230,7 @@ class MainWindow(QMainWindow):
         # 左邊：分類樹（點選後右邊只顯示這個分類與子分類的紀錄）
         self.sidebar = CategoryDropTree()
         self.sidebar.entries_dropped.connect(self.move_entries)
-        self.sidebar.setHeaderLabels(["分類", "優", "筆", "進度"])
+        self.sidebar.setHeaderLabels(["分類", "優", "筆", "時數", "進度"])
         self.sidebar.setIndentation(14)
         self.sidebar.setMinimumWidth(260)
         self.sidebar.setItemDelegateForColumn(SIDE_PROGRESS, ProgressDelegate(self.sidebar))
@@ -238,6 +240,8 @@ class MainWindow(QMainWindow):
         side_header.setSectionResizeMode(SIDE_NAME, QHeaderView.Stretch)
         self.sidebar.setColumnWidth(SIDE_PRIORITY, 30)
         self.sidebar.setColumnWidth(SIDE_COUNT, 34)
+        self.sidebar.setColumnWidth(SIDE_HOURS, 48)
+        self.sidebar.headerItem().setToolTip(SIDE_HOURS, "這一天（含子分類）紀錄的時數加總；時段重疊的各自計算")
         self.sidebar.setColumnWidth(SIDE_PROGRESS, 112)
         self.sidebar.currentItemChanged.connect(lambda *_: self.refresh())
         self.sidebar.itemDoubleClicked.connect(self._sidebar_double_clicked)
@@ -273,6 +277,11 @@ class MainWindow(QMainWindow):
         side_buttons.addWidget(self.progress_btn)
         side_buttons.addWidget(self.child_btn)
         side_buttons.addStretch()
+        self.hours_box = QCheckBox("顯示時數")
+        self.hours_box.setChecked(settings.show_hours)
+        self.hours_box.setToolTip("在分類樹顯示這一天各分類（含子分類）的時數；時段重疊的紀錄各自計算")
+        self.hours_box.toggled.connect(self._toggle_hours)
+        side_buttons.addWidget(self.hours_box)
         side_panel = QWidget()
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(0, 0, 0, 0)
@@ -330,6 +339,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._apply_progress_visibility()
+        self.sidebar.setColumnHidden(SIDE_HOURS, not settings.show_hours)
         self.reload_categories()
 
     @property
@@ -372,6 +382,7 @@ class MainWindow(QMainWindow):
         items[UNCATEGORIZED] = none_item
         for item in items.values():
             item.setTextAlignment(SIDE_COUNT, Qt.AlignCenter)
+            item.setTextAlignment(SIDE_HOURS, Qt.AlignRight | Qt.AlignVCenter)
         self.sidebar.expandAll()
         self.sidebar.setCurrentItem(items.get(current, all_item))
         self.sidebar.blockSignals(False)
@@ -391,22 +402,23 @@ class MainWindow(QMainWindow):
             it += 1
 
     def _update_sidebar_counts(self, entries: list[Entry]):
-        """每個分類（含子分類）在這一天的紀錄數。"""
+        """每個分類（含子分類）在這一天的紀錄數與時數。"""
         parents = {n.id: n.parent_id for n in self._nodes}
-        counts: dict = {ALL: len(entries), UNCATEGORIZED: 0}
-        for e in entries:
-            if e.category_id is None:
-                counts[UNCATEGORIZED] += 1
-            cid, seen = e.category_id, set()
-            while cid is not None and cid not in seen:
-                seen.add(cid)
-                counts[cid] = counts.get(cid, 0) + 1
-                cid = parents.get(cid)
+        counts, none_count, all_count = roll_up(entries, parents)
+        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: e.minutes)
+        counts.update({ALL: all_count, UNCATEGORIZED: none_count})
+        minutes.update({ALL: all_minutes, UNCATEGORIZED: none_minutes})
         it = QTreeWidgetItemIterator(self.sidebar)
         while it.value():
-            n = counts.get(it.value().data(SIDE_NAME, SIDEBAR_KEY), 0)
+            key = it.value().data(SIDE_NAME, SIDEBAR_KEY)
+            n, m = counts.get(key, 0), minutes.get(key, 0)
             it.value().setText(SIDE_COUNT, str(n) if n else "")
+            it.value().setText(SIDE_HOURS, hours_text(m) if m else "")
             it += 1
+
+    def _toggle_hours(self, checked: bool):
+        self.settings.save("show_hours", checked)
+        self.sidebar.setColumnHidden(SIDE_HOURS, not checked)
 
     def _toggle_progress(self, checked: bool):
         self.settings.save("show_progress", checked)

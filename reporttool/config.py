@@ -16,6 +16,7 @@ DEFAULT_SETTINGS = {
     "max_image_side": 1600,
     "show_progress": True,  # 主視窗是否顯示分類進度（主視窗的「顯示進度」勾選框）
     "show_preview": True,  # 主視窗清單下方是否顯示預覽（主視窗的「顯示預覽」勾選框）
+    "show_hours": True,  # 主視窗分類樹是否顯示當天時數（分類樹下方的「顯示時數」勾選框）
 }
 
 DEFAULT_INSTRUCTIONS = """\
@@ -26,7 +27,7 @@ DEFAULT_INSTRUCTIONS = """\
 - 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
 - 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
 - 每項開頭的 [09:00–10:30 1.5h] 是這件事的時段與花費時數，只有一個時間的表示沒有記下時長；需要時可以帶出花了多少時間
-- 範圍整理中，同一件工作只列一次：【工作名稱】[最新：狀態] 底下縮排列出範圍內每一筆的進展，請整合成一項說明這段期間的進展，狀態以「最新」為準
+- 範圍整理中，同一件工作只列一次：【工作名稱】[最新：狀態] 底下縮排列出範圍內每一筆的進展，請整合成一項說明這段期間的進展，狀態以「最新」為準；「## 工時統計」是各分類（含子分類）的時數與占比，可以在最後簡短總結時間主要花在哪裡
 - 只用紀錄和圖片中的內容，不要補充或編造
 - 參考圖片內容讓描述更具體，但保留（附圖N）標記
 - 用 Slack mrkdwn 格式，語氣簡潔、專業
@@ -74,6 +75,7 @@ class Settings:
     config_dir: Path
     show_progress: bool = True
     show_preview: bool = True
+    show_hours: bool = True
 
     def save(self, key: str, value):
         """把一個設定寫回 settings.json（其他內容不動），同時更新這個物件。"""
@@ -124,6 +126,7 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
         config_dir=config_dir,
         show_progress=bool(raw["show_progress"]),
         show_preview=bool(raw["show_preview"]),
+        show_hours=bool(raw["show_hours"]),
     )
 
 

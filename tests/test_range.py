@@ -73,7 +73,16 @@ def test_range_report_merges_chain(tmp_path):
     db, _ = chain_db(tmp_path)
     md = (generate_range_report(db, "2026-11-02", "2026-11-08", tmp_path / "out", "指示") / "report.md").read_text(
         encoding="utf-8")
-    records = md[md.index("## 期間工作紀錄"):md.index("\n## 分類資訊")]
+    records = md[md.index("## 期間工作紀錄"):md.index("\n## 工時統計")]
+    stats = md[md.index("## 工時統計"):md.index("\n## 分類資訊")]
+    assert stats == (
+        "## 工時統計\n"
+        "（每個分類都包含子分類；時段重疊的紀錄各自計算，沒有扣除重疊）\n"
+        "- 開發：3h（55%）\n"  # 中途改分類：各筆的時數算在自己的分類
+        "- 會議：2h（36%）\n"
+        "- 未分類：0.5h（9%）\n"
+        "- 合計：5.5h\n"
+    )
     assert records == (
         "## 期間工作紀錄（共 2 件工作、4 筆紀錄，2 天）\n"
         # 分類、優先、tag 用範圍內最新那筆；分岔各自的最新狀態都列；有分岔時名稱用範圍內最早那筆
@@ -137,3 +146,57 @@ def test_main_window_range_review(qapp, tmp_path, monkeypatch):
     win.review_range()
     assert opened == [tmp_path / "out" / "report_2026-11-01_to_2026-11-07"]
     assert QApplication.clipboard().text().startswith("# 工作回報整理請求（2026-11-01 ~ 2026-11-07）")
+
+
+def test_hours_section_rolls_up_subcategories(tmp_path):
+    db = Database(tmp_path / "data")
+    dev = db.categories()[0][0]
+    proj = db.add_category("專案A", dev)
+    sub = db.add_category("登入頁", proj)
+    db.save_entry(Entry(None, "2026-11-02", "12:00", "a", "done", category_id=sub, start="09:00", end="12:00"))
+    db.save_entry(Entry(None, "2026-11-02", "12:00", "重疊", "done", category_id=dev, start="11:00", end="12:00"))
+    db.save_entry(Entry(None, "2026-11-03", "09:00", "很短", "done", start="09:00", end="09:01"))
+    db.save_entry(Entry(None, "2026-11-03", "10:00", "時長 0", "done", category_id=db.categories()[1][0],
+                        start="10:00", end="10:00"))
+    md = (generate_range_report(db, "2026-11-02", "2026-11-08", tmp_path / "out", "x") / "report.md").read_text(
+        encoding="utf-8")
+    assert (
+        "- 開發：4h（100%）\n"  # 重疊的時段各自計算
+        "- 開發 › 專案A：3h（75%）\n"
+        "- 開發 › 專案A › 登入頁：3h（75%）\n"
+        "- 未分類：0.02h（<1%）\n"  # 時長 0 的「會議」不列
+        "- 合計：4.02h\n"
+    ) in md
+
+
+def test_hours_section_omitted_without_durations(tmp_path):
+    db = Database(tmp_path / "data")
+    add(db, "2026-11-02", "09:00", "a")
+    md = (generate_range_report(db, "2026-11-02", "2026-11-02", tmp_path / "out", "x") / "report.md").read_text(
+        encoding="utf-8")
+    assert "工時統計" not in md
+
+
+def test_sidebar_hours_column(qapp, tmp_path):
+    from reporttool.ui import main_window as mw
+    db = Database(tmp_path / "data")
+    dev = db.categories()[0][0]
+    proj = db.add_category("專案A", dev)
+    db.save_entry(Entry(None, "2026-11-02", "10:30", "a", "done", category_id=proj, start="09:00", end="10:30"))
+    db.save_entry(Entry(None, "2026-11-02", "11:00", "b", "done", start="10:30", end="11:00"))
+    db.save_entry(Entry(None, "2026-11-03", "11:00", "別天", "done", category_id=dev, start="08:00", end="11:00"))
+    win = MainWindow(db, load_settings(tmp_path / "config"))
+    win.date_edit.setDate(QDate(2026, 11, 2))
+    hours = {}
+    it = mw.QTreeWidgetItemIterator(win.sidebar)
+    while it.value():
+        hours[it.value().text(mw.SIDE_NAME)] = it.value().text(mw.SIDE_HOURS)
+        it += 1
+    assert hours["全部"] == "2h" and hours["開發"] == "1.5h" and hours["專案A"] == "1.5h"
+    assert hours["未分類"] == "0.5h" and hours["會議"] == ""
+
+    win.hours_box.setChecked(False)
+    assert win.sidebar.isColumnHidden(mw.SIDE_HOURS)
+    assert load_settings(tmp_path / "config").show_hours is False
+    again = MainWindow(db, load_settings(tmp_path / "config"))
+    assert again.sidebar.isColumnHidden(mw.SIDE_HOURS) and not again.hours_box.isChecked()

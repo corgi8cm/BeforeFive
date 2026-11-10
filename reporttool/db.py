@@ -152,6 +152,26 @@ class Entry:
         return self.text.strip().splitlines()[0] if self.text.strip() else ""
 
 
+def roll_up(entries: list[Entry], parents: dict, value=lambda e: 1) -> tuple[dict[int, int], int, int]:
+    """每個分類（含子分類）的加總。parents：{分類 id: 上層 id}。
+
+    回傳（{分類 id: 加總}, 未分類的加總, 全部的加總）；value 決定每筆算多少（預設 1＝筆數，或用 e.minutes）。"""
+    totals: dict[int, int] = {}
+    uncategorized = total = 0
+    for e in entries:
+        v = value(e)
+        total += v
+        if e.category_id is None or e.category_id not in parents:
+            uncategorized += v
+            continue
+        cid, seen = e.category_id, set()
+        while cid is not None and cid not in seen:
+            seen.add(cid)
+            totals[cid] = totals.get(cid, 0) + v
+            cid = parents.get(cid)
+    return totals, uncategorized, total
+
+
 def same_level_key(entry: Entry) -> tuple:
     """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依起始時間。"""
     return entry.priority, entry.summary, entry.start, entry.time
