@@ -29,7 +29,7 @@ LEGACY_STATUSES = {"blocked": "todo"}  # 舊版的「卡住」改成「待辦」
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
 DEFAULT_PRIORITY = 3
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 CATEGORY_SEP = " › "
 CATEGORY_NAMESPACE = uuid.UUID("7d4f2a3e-5b1c-4e8a-9f60-2c3d4e5f6a7b")
 
@@ -136,6 +136,13 @@ class Entry:
     uuid: str = ""  # 新增時自動產生
     title: str = ""  # 可省略
     priority: int = DEFAULT_PRIORITY
+    start: str = ""  # 起始時間 HH:MM；新增時起訖都空白就由 save_entry 依規則自動補
+    end: str = ""  # 結束時間 HH:MM，和起始同一天、不早於起始
+
+    @property
+    def minutes(self) -> int:
+        """時長（分鐘）；起訖還沒填時是 0。"""
+        return duration_minutes(self.start, self.end) if self.start and self.end else 0
 
     @property
     def summary(self) -> str:
@@ -148,6 +155,28 @@ class Entry:
 def same_level_key(entry: Entry) -> tuple:
     """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依時間。"""
     return entry.priority, entry.summary, entry.time
+
+
+_CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def is_clock(value) -> bool:
+    return isinstance(value, str) and bool(_CLOCK.match(value))
+
+
+def duration_minutes(start: str, end: str) -> int:
+    (sh, sm), (eh, em) = (map(int, start.split(":")), map(int, end.split(":")))
+    return (eh * 60 + em) - (sh * 60 + sm)
+
+
+def check_times(start: str, end: str):
+    """起訖時間的規則；不符合時 ValueError（訊息可以直接顯示給使用者）。"""
+    if bool(start) != bool(end):
+        raise ValueError("起始和結束時間要一起填")
+    if not (is_clock(start) and is_clock(end)):
+        raise ValueError("時間格式要是 HH:MM")
+    if end < start:
+        raise ValueError("結束時間不能早於起始時間（跨午夜的工作請拆成兩筆）")
 
 
 def normalize_tag(tag: str) -> str:
@@ -206,11 +235,14 @@ class Database:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
                  4: self._migrate_v4, 5: self._migrate_v5, 6: self._migrate_v6,
-                 7: self._migrate_v7}
+                 7: self._migrate_v7, 8: self._migrate_v8}
         has_entries = self.conn.execute("SELECT 1 FROM entries LIMIT 1").fetchone() is not None
         if version < 6 and has_entries:  # 分類改成樹狀是較大的改動，升級前先留一份備份
             self.conn.commit()
             shutil.copy2(self.data_dir / "reporttool.db", self.data_dir / "reporttool-before-v6.db")
+        elif version < 8 and has_entries:  # 起訖時間由舊資料回推，升級前也留一份備份
+            self.conn.commit()
+            shutil.copy2(self.data_dir / "reporttool.db", self.data_dir / "reporttool-before-v8.db")
         # 重建資料表時要暫時關掉外鍵檢查（不能在交易中切換）
         self.conn.execute("PRAGMA foreign_keys = OFF")
         try:
@@ -288,6 +320,23 @@ class Database:
             self.conn.execute(
                 f"ALTER TABLE categories ADD COLUMN priority INTEGER NOT NULL DEFAULT {DEFAULT_PRIORITY}")
 
+    def _migrate_v8(self):
+        """起訖時間。舊紀錄的 time 是寫下這筆的時間：結束＝time，起始＝同一天前一筆的結束（每天第一筆時長 0）。
+
+        不更新 updated_at：每台裝置轉換的結果都相同。tombstone 的起訖都是 time。
+        """
+        if "start_time" in self._columns("entries"):
+            return
+        self.conn.execute("ALTER TABLE entries ADD COLUMN start_time TEXT NOT NULL DEFAULT ''")
+        self.conn.execute("ALTER TABLE entries ADD COLUMN end_time TEXT NOT NULL DEFAULT ''")
+        self.conn.execute("UPDATE entries SET start_time=time, end_time=time")
+        last_end: dict[str, str] = {}
+        for r in self.conn.execute(
+                f"SELECT id, date, time FROM entries WHERE {LIVE} ORDER BY date, time, created_at, id").fetchall():
+            if r["date"] in last_end:
+                self.conn.execute("UPDATE entries SET start_time=? WHERE id=?", (last_end[r["date"]], r["id"]))
+            last_end[r["date"]] = r["time"]
+
     @property
     def device_id(self) -> str:
         return self.conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()[0]
@@ -328,27 +377,42 @@ class Database:
             (tag, now),
         )
 
+    def previous_end(self, date: str, before: str, exclude_id: int | None = None) -> str | None:
+        """「前一則」的結束時間：同一天、還沒刪除的紀錄中，不晚於 before 的最晚結束時間。"""
+        row = self.conn.execute(
+            f"SELECT MAX(end_time) AS t FROM entries WHERE date=? AND end_time<=? AND id IS NOT ? AND {LIVE}",
+            (date, before, exclude_id)).fetchone()
+        return row["t"]
+
+    def fill_times(self, entry: Entry):
+        """起訖都空白時自動補：結束＝entry.time（建立的時間），起始＝前一則的結束；沒有前一則時長就是 0。"""
+        if not entry.start and not entry.end:
+            entry.end = entry.time
+            entry.start = self.previous_end(entry.date, entry.time, entry.id) or entry.time
+
     def save_entry(self, entry: Entry) -> int:
-        """新增或更新一筆紀錄（含 tag 與圖片），回傳 id。"""
+        """新增或更新一筆紀錄（含 tag 與圖片），回傳 id。起訖不合規則時 ValueError，什麼都不寫入。"""
+        self.fill_times(entry)
+        check_times(entry.start, entry.end)
         now = utc_now()
         removed_files = []
         with self.conn:
             if entry.id is None:
                 entry.uuid = entry.uuid or new_uuid()
                 cur = self.conn.execute(
-                    "INSERT INTO entries (uuid, date, time, title, text, status, priority, carried_from,"
-                    " category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (entry.uuid, entry.date, entry.time, entry.title, entry.text, entry.status, entry.priority,
-                     entry.carried_from, entry.category_id, now, now),
+                    "INSERT INTO entries (uuid, date, time, start_time, end_time, title, text, status, priority,"
+                    " carried_from, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.uuid, entry.date, entry.time, entry.start, entry.end, entry.title, entry.text, entry.status,
+                     entry.priority, entry.carried_from, entry.category_id, now, now),
                 )
                 entry.id = cur.lastrowid
                 old_tags = set()
             else:
                 self.conn.execute(
-                    "UPDATE entries SET date=?, time=?, title=?, text=?, status=?, priority=?, category_id=?,"
-                    " updated_at=? WHERE id=?",
-                    (entry.date, entry.time, entry.title, entry.text, entry.status, entry.priority, entry.category_id,
-                     now, entry.id),
+                    "UPDATE entries SET date=?, time=?, start_time=?, end_time=?, title=?, text=?, status=?,"
+                    " priority=?, category_id=?, updated_at=? WHERE id=?",
+                    (entry.date, entry.time, entry.start, entry.end, entry.title, entry.text, entry.status,
+                     entry.priority, entry.category_id, now, entry.id),
                 )
                 old_tags = {r["tag"] for r in self.conn.execute(
                     "SELECT tag FROM entry_tags WHERE entry_id=?", (entry.id,))}
@@ -400,7 +464,7 @@ class Database:
             "SELECT * FROM images WHERE entry_id=? ORDER BY position", (row["id"],))]
         return Entry(row["id"], row["date"], row["time"], row["text"], row["status"], tags, images,
                      row["carried_from"], row["category_id"], self.category_label(row["category_id"]), row["uuid"],
-                     row["title"], row["priority"])
+                     row["title"], row["priority"], row["start_time"], row["end_time"])
 
     def get_entry(self, entry_id: int) -> Entry | None:
         row = self.conn.execute(f"SELECT * FROM entries WHERE id=? AND {LIVE}", (entry_id,)).fetchone()
@@ -765,8 +829,9 @@ class Database:
         time = time or datetime.now().strftime("%H:%M")
         new_ids = []
         for old in self.carry_over_candidates(from_date, to_date):
+            # 起訖都是帶入當下（時長 0），不沿用前一筆的時間
             new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id,
-                        title=old.title, priority=old.priority)
+                        title=old.title, priority=old.priority, start=time, end=time)
             new_ids.append(self.save_entry(new))
         return new_ids
 
