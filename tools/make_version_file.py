@@ -14,11 +14,11 @@ def version_info(version: str) -> str:
                     fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
-      StringStruct('FileDescription', 'ReportTool'),
+      StringStruct('FileDescription', '下班前 BeforeFive'),
       StringStruct('FileVersion', '{version}'),
-      StringStruct('InternalName', 'ReportTool'),
-      StringStruct('OriginalFilename', 'ReportTool.exe'),
-      StringStruct('ProductName', 'ReportTool'),
+      StringStruct('InternalName', 'BeforeFive'),
+      StringStruct('OriginalFilename', 'BeforeFive.exe'),
+      StringStruct('ProductName', '下班前 BeforeFive'),
       StringStruct('ProductVersion', '{version}'),
       StringStruct('LegalCopyright', 'Copyright (c) 2026 Corgi Tsai. MIT License.')])]),
     VarFileInfo([VarStruct('Translation', [0x0409, 1200])])

@@ -1,4 +1,6 @@
-# ReportTool 工作回報工具
+# 下班前 BeforeFive
+
+> 原名 ReportTool（工作回報工具）
 
 工作中隨手記錄，下班前一鍵整理成 `report_YYYY-MM-DD/` 資料夾（含 `report.md` 與附圖），丟給網頁版 Claude / Gemini 寫成 Slack 回報。
 
@@ -14,11 +16,11 @@
 
 關掉主視窗就會結束程式，不會留在背景執行。全域快捷鍵只在程式開著時有效（主視窗最小化也可以）。重複執行 `run.bat` 只會叫出現有視窗。
 
-**開機自動啟動**：按 `Win+R` 輸入 `shell:startup`，把 `run.bat`（或 `ReportTool.exe`）的捷徑放進去。
+**開機自動啟動**：按 `Win+R` 輸入 `shell:startup`，把 `run.bat`（或 `BeforeFive.exe`）的捷徑放進去。
 
 ### 打包成 exe
 
-完成上面的 `setup.bat` 後，雙擊 `build.bat`，約一分鐘後產生 `dist\ReportTool.exe`（單一檔案，約 60 MB，不需要安裝 Python 就能執行）。
+完成上面的 `setup.bat` 後，雙擊 `build.bat`，約一分鐘後產生 `dist\BeforeFive.exe`（單一檔案，約 60 MB，不需要安裝 Python 就能執行）。
 
 - 把 exe 放到任何資料夾都可以；第一次執行會在 exe 旁邊建立 `config\`，`WorkReports\` 也會產生在 exe 旁邊
 - 紀錄資料一樣在 `%LOCALAPPDATA%\ReportTool\data`，和 `run.bat` 版本共用同一份
@@ -129,7 +131,7 @@ ReportTool\WorkReports\report_2026-11-02\
 
 ```
 main.py                     進入點
-build.bat                   打包成 dist\ReportTool.exe
+build.bat                   打包成 dist\BeforeFive.exe
 tools/make_ico.py           產生 exe 圖示
 tools/make_version_file.py  產生 exe 的版本資訊（檔案內容 → 詳細資料）
 reporttool/

@@ -180,7 +180,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self._quick_dialog = None
         self._nodes: list[Category] = []
-        self.setWindowTitle(f"工作回報工具 v{__version__}")
+        self.setWindowTitle(f"下班前 v{__version__}")
         self.resize(1100, 600)
 
         self.date_edit = QDateEdit(QDate.currentDate())
@@ -829,9 +829,9 @@ class MainWindow(QMainWindow):
     # ---- 備份 ----
 
     def export_backup(self):
-        default = self.settings.output_dir / f"ReportTool備份_{date.today().isoformat()}.zip"
+        default = self.settings.output_dir / f"下班前備份_{date.today().isoformat()}.zip"
         self.settings.output_dir.mkdir(parents=True, exist_ok=True)
-        path, _ = QFileDialog.getSaveFileName(self, "匯出備份", str(default), "ReportTool 備份 (*.zip)")
+        path, _ = QFileDialog.getSaveFileName(self, "匯出備份", str(default), "下班前備份 (*.zip)")
         if not path:
             return
         try:
@@ -844,7 +844,7 @@ class MainWindow(QMainWindow):
 
     def import_backup(self):
         path, _ = QFileDialog.getOpenFileName(self, "從備份匯入", str(self.settings.output_dir),
-                                              "ReportTool 備份 (*.zip)")
+                                              "下班前備份 (*.zip)")
         if not path:
             return
         if QMessageBox.question(
