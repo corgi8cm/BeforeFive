@@ -36,11 +36,11 @@ def make_icon() -> QIcon:
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("ReportTool")
+    app.setApplicationName("BeforeFive")
     app.setApplicationVersion(__version__)
 
     # 已經在執行就叫出現有視窗
-    server_name = f"ReportTool-{getpass.getuser()}"
+    server_name = f"ReportTool-{getpass.getuser()}"  # 改名前就用這個名稱，維持不變
     probe = QLocalSocket()
     probe.connectToServer(server_name)
     if probe.waitForConnected(300):

@@ -25,7 +25,7 @@ def test_version_is_semver_and_in_changelog():
 def test_window_title_shows_version(tmp_path):
     QApplication.instance() or QApplication([])
     win = MainWindow(Database(tmp_path / "data"), load_settings(tmp_path / "config"))
-    assert win.windowTitle() == f"工作回報工具 v{__version__}"
+    assert win.windowTitle() == f"下班前 v{__version__}"
 
 
 def test_exe_version_resource():

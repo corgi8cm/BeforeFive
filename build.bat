@@ -1,5 +1,5 @@
 @echo off
-rem Build a single-file exe: dist\ReportTool.exe. Temp files go to %LOCALAPPDATA% so OneDrive does not sync them.
+rem Build a single-file exe: dist\BeforeFive.exe. Temp files go to %LOCALAPPDATA% so OneDrive does not sync them.
 set VENV=%LOCALAPPDATA%\ReportTool\venv
 set WORK=%LOCALAPPDATA%\ReportTool\build
 if not exist "%VENV%\Scripts\python.exe" (
@@ -12,7 +12,7 @@ if not exist "%WORK%" mkdir "%WORK%"
 "%VENV%\Scripts\python.exe" "%~dp0tools\make_ico.py" "%WORK%\icon.ico" || goto :fail
 "%VENV%\Scripts\python.exe" "%~dp0tools\make_version_file.py" "%WORK%\version.txt" || goto :fail
 "%VENV%\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed ^
-    --name ReportTool --icon "%WORK%\icon.ico" --version-file "%WORK%\version.txt" ^
+    --name BeforeFive --icon "%WORK%\icon.ico" --version-file "%WORK%\version.txt" ^
     --workpath "%WORK%" --specpath "%WORK%" --distpath "%~dp0dist" ^
     --exclude-module pytest --exclude-module tkinter ^
     --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets ^
@@ -20,7 +20,7 @@ if not exist "%WORK%" mkdir "%WORK%"
     --exclude-module PySide6.QtMultimedia --exclude-module PySide6.QtCharts --exclude-module PySide6.QtPdf ^
     "%~dp0main.py" || goto :fail
 echo.
-echo Done: %~dp0dist\ReportTool.exe
+echo Done: %~dp0dist\BeforeFive.exe
 echo On first run, a config\ folder is created next to the exe.
 pause
 exit /b 0

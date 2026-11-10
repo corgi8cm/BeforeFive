@@ -15,6 +15,7 @@ DEFAULT_SETTINGS = {
     "output_dir": "",  # 空白 = 專案底下的 WorkReports
     "max_image_side": 1600,
     "show_progress": True,  # 主視窗是否顯示分類進度（主視窗的「顯示進度」勾選框）
+    "show_preview": True,  # 主視窗清單下方是否顯示預覽（主視窗的「顯示預覽」勾選框）
 }
 
 DEFAULT_INSTRUCTIONS = """\
@@ -66,6 +67,7 @@ class Settings:
     max_image_side: int
     config_dir: Path
     show_progress: bool = True
+    show_preview: bool = True
 
     def save(self, key: str, value):
         """把一個設定寫回 settings.json（其他內容不動），同時更新這個物件。"""
@@ -115,6 +117,7 @@ def load_settings(config_dir: Path = CONFIG_DIR) -> Settings:
         max_image_side=int(raw["max_image_side"]),
         config_dir=config_dir,
         show_progress=bool(raw["show_progress"]),
+        show_preview=bool(raw["show_preview"]),
     )
 
 

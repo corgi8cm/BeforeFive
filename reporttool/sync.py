@@ -114,7 +114,7 @@ def _require(cond, message):
 
 def validate(data: dict):
     """匯入前先整份檢查，有問題就整份不匯入。"""
-    _require(isinstance(data, dict) and data.get("format") == FORMAT, "不是 ReportTool 的資料包")
+    _require(isinstance(data, dict) and data.get("format") == FORMAT, "不是下班前（ReportTool）的資料包")
     _require(data.get("version") in SUPPORTED_VERSIONS, f"不支援的資料包版本：{data.get('version')}")
     for c in data.get("categories", []):
         _require(isinstance(c.get("name"), str) and c["name"].strip(), "分類名稱是空的")
