@@ -22,6 +22,7 @@ from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
 from .changes_dialog import ChangesDialog
+from .gantt_dialog import GanttDialog
 from .history_view import HistoryDialog, HistoryPreview
 from .entry_dialog import STATUS_COLORS, EntryDialog
 from .manage_dialog import (
@@ -317,6 +318,7 @@ class MainWindow(QMainWindow):
         self.search_box.setFixedWidth(200)
         self.search_box.returnPressed.connect(lambda: self.open_search(self.search_box.text()))
         bottom.addWidget(self.search_box)
+        bottom.addWidget(button("📈 甘特圖", self.open_gantt, "把一天或一段期間的紀錄畫成甘特圖，可以存成 PNG"))
         QShortcut(QKeySequence.Find, self, activated=lambda: (self.search_box.setFocus(), self.search_box.selectAll()))
         bottom.addStretch()
         bottom.addWidget(button("管理分類與標籤", self.manage))
@@ -708,6 +710,20 @@ class MainWindow(QMainWindow):
         self._search_dialog.raise_()
         self._search_dialog.activateWindow()
         return self._search_dialog
+
+    def open_gantt(self, start: str | None = None, end: str | None = None) -> GanttDialog | None:
+        """選範圍（預設是正在看的這一天）後另開甘特圖視窗；雙擊長條跳到那筆紀錄。"""
+        if start is None:
+            dlg = RangeDialog(QDate.currentDate(), self, "甘特圖範圍", "畫出來",
+                              "只選一天：橫軸是時間，每筆紀錄一條。選好幾天：橫軸是日期，每件工作一列。",
+                              self.date_edit.date())
+            if dlg.exec() != QDialog.Accepted:
+                return None
+            start, end = dlg.range()
+        gantt = GanttDialog(self.db, start, end or start, self.settings.output_dir, self)
+        gantt.entry_activated.connect(self.go_to_entry)
+        gantt.show()
+        return gantt
 
     def go_to_entry(self, entry_id: int):
         """跳到這筆紀錄的那一天並選取它；目前的分類篩選看不到它時改成「全部」。"""
