@@ -99,7 +99,12 @@ OLDER_INSTRUCTIONS = V1_INSTRUCTIONS.replace(
 ).replace(V1_INSTRUCTIONS.splitlines()[4] + "\n", "")
 
 
-@pytest.mark.parametrize("old", [V1_INSTRUCTIONS, OLDER_INSTRUCTIONS])
+def _v2_instructions():
+    from reporttool.config import DEFAULT_INSTRUCTIONS, TIME_LINE
+    return DEFAULT_INSTRUCTIONS.replace(TIME_LINE + "\n", "")
+
+
+@pytest.mark.parametrize("old", [V1_INSTRUCTIONS, OLDER_INSTRUCTIONS, _v2_instructions()])
 def test_old_instructions_are_upgraded(tmp_path, old):
     from reporttool.config import DEFAULT_INSTRUCTIONS, load_instructions
 

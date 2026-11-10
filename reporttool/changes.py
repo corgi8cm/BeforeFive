@@ -30,9 +30,11 @@ class EntryChange:
 
     @property
     def previous_label(self) -> str:
-        """「11-03」；同一天追加的進度再加上時間。"""
+        """「11-03」；同一天追加的進度再加上前一筆的起始時間。"""
         label = self.previous.date[5:]
-        return f"{label} {self.previous.time}" if self.previous.date == self.entry.date else label
+        if self.previous.date != self.entry.date:
+            return label
+        return f"{label} {self.previous.start or self.previous.time}"
 
     def summary(self) -> str:
         parts = list(self.fields)

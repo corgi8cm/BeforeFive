@@ -179,3 +179,134 @@ def test_two_devices_converge_with_times(tmp_path):
     merge(a, snapshot(b), lambda rel: None)
     assert a.entries_for_date(DATE)[0].start == "09:15"
     assert snapshot(a)["entries"] == snapshot(b)["entries"]
+
+
+# ---- 第 1 步：輸入規則與顯示 ----
+
+from reporttool.db import duration_text, hours_text, parse_clock, resolve_times, span_text  # noqa: E402
+
+
+@pytest.mark.parametrize("text, value", [("", ""), (" 9:05 ", "09:05"), ("09:05", "09:05"), ("0905", "09:05"),
+                                         ("905", "09:05"), ("9：05", "09:05")])
+def test_parse_clock(text, value):
+    assert parse_clock(text) == value
+
+
+@pytest.mark.parametrize("text", ["25:00", "9", "abc", "12:60", "12345"])
+def test_parse_clock_rejects(text):
+    with pytest.raises(ValueError):
+        parse_clock(text)
+
+
+def rt(start, end, date=DATE, editing=False, follow_up=False):
+    return resolve_times(start, end, date=date, today=DATE, now="15:00", editing=editing, follow_up=follow_up)
+
+
+def test_resolve_times():
+    assert rt("", "") == ("", "")  # 今天的新紀錄：交給 save_entry 自動補
+    assert rt("", "", follow_up=True) == ("15:00", "15:00")  # 追加進度：時長 0
+    assert rt("9:00", "1030") == ("09:00", "10:30")
+    assert rt("14:00", "18:00") == ("14:00", "15:00")  # 今天的結束時間最晚到現在
+    assert rt("14:00", "18:00", date="2026-11-01") == ("14:00", "18:00")  # 別天不限制
+    for kwargs in ({"date": "2026-11-01"}, {"editing": True}):
+        with pytest.raises(ValueError):
+            rt("", "", **kwargs)
+    with pytest.raises(ValueError):
+        rt("16:00", "18:00")  # 結束改成 15:00 之後比起始早
+    with pytest.raises(ValueError):
+        rt("09:00", "")
+
+
+def test_display_formats():
+    assert duration_text(45) == "45 分" and duration_text(120) == "2 小時" and duration_text(90) == "1 小時 30 分"
+    assert hours_text(90) == "1.5h" and hours_text(50) == "0.83h" and hours_text(60) == "1h"
+    e = Entry(None, DATE, "10:30", "a", "done", start="09:00", end="10:30")
+    assert span_text(e) == "09:00–10:30（1 小時 30 分）" and span_text(e, False) == "09:00–10:30"
+    assert span_text(Entry(None, DATE, "09:12", "a", "done", start="09:12", end="09:12")) == "09:12"
+
+
+# ---- 輸入視窗（GUI） ----
+
+@pytest.fixture
+def qapp():
+    pytest.importorskip("PySide6")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def warnings(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _p, _t, text, *a: shown.append(text))
+    return shown
+
+
+def test_dialog_new_entry_auto_fills(qapp, tmp_path):
+    from reporttool.ui.entry_dialog import EntryDialog
+    db = Database(tmp_path)
+    db.save_entry(Entry(None, DATE, "10:00", "a", "done", start="09:00", end="10:00"))
+    dlg = EntryDialog(db, DATE)  # conftest：今天 2026-11-02 17:00
+    assert dlg.start_edit.text() == "" and dlg.end_edit.text() == ""
+    dlg.text.setPlainText("b")
+    dlg.save()
+    e = [x for x in db.entries_for_date(DATE) if x.text == "b"][0]
+    assert (e.time, e.start, e.end) == ("17:00", "10:00", "17:00")
+
+
+def test_dialog_other_day_requires_times(qapp, tmp_path, warnings):
+    from reporttool.ui.entry_dialog import EntryDialog
+    db = Database(tmp_path)
+    dlg = EntryDialog(db, "2026-11-01")
+    dlg.text.setPlainText("補記")
+    dlg.save()
+    assert warnings and db.entries_for_date("2026-11-01") == []
+    dlg.start_edit.setText("13:00")
+    dlg.end_edit.setText("14:30")
+    dlg.save()
+    (e,) = db.entries_for_date("2026-11-01")
+    assert (e.start, e.end, e.minutes) == ("13:00", "14:30", 90)
+
+
+def test_dialog_edit_keeps_times_and_rejects_clearing(qapp, tmp_path, warnings):
+    from reporttool.ui.entry_dialog import EntryDialog
+    db = Database(tmp_path)
+    entry_id = db.save_entry(Entry(None, DATE, "10:00", "a", "done", start="09:00", end="10:00"))
+    dlg = EntryDialog(db, DATE, db.get_entry(entry_id))
+    assert (dlg.start_edit.text(), dlg.end_edit.text()) == ("09:00", "10:00")
+    dlg.end_edit.setText("")
+    dlg.save()
+    assert warnings and db.get_entry(entry_id).end == "10:00"
+    dlg.start_edit.setText("")
+    dlg.save()
+    assert len(warnings) == 2
+    dlg.start_edit.setText("16:00")
+    dlg.end_edit.setText("23:00")  # 超過現在（17:00）就改成現在
+    dlg.save()
+    e = db.get_entry(entry_id)
+    assert (e.time, e.start, e.end) == ("10:00", "16:00", "17:00")  # 建立時間不變
+
+
+def test_dialog_follow_up_has_zero_duration(qapp, tmp_path):
+    from reporttool.ui.entry_dialog import EntryDialog
+    db = Database(tmp_path)
+    old = db.save_entry(Entry(None, DATE, "10:00", "a", "doing", start="09:00", end="10:00"))
+    dlg = EntryDialog(db, DATE, follow_up_of=db.get_entry(old))
+    dlg.text.setPlainText("追加")
+    dlg.save()
+    e = [x for x in db.entries_for_date(DATE) if x.text == "追加"][0]
+    assert (e.start, e.end, e.carried_from) == ("17:00", "17:00", old)
+
+
+def test_main_window_shows_span(qapp, tmp_path):
+    from PySide6.QtCore import QDate
+    from reporttool.config import load_settings
+    from reporttool.ui.main_window import MainWindow
+    db = Database(tmp_path / "data")
+    db.save_entry(Entry(None, DATE, "10:30", "a", "done", start="09:00", end="10:30"))
+    db.save_entry(Entry(None, DATE, "11:00", "b", "done", start="11:00", end="11:00"))
+    win = MainWindow(db, load_settings(tmp_path / "config"))
+    win.date_edit.setDate(QDate.fromString(DATE, "yyyy-MM-dd"))
+    assert sorted(item.text(0) for item in win.entry_items()) == ["09:00–10:30（1 小時 30 分）", "11:00"]

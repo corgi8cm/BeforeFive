@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image as PILImage, ImageOps
 
 from .changes import EntryChange, change_for, format_change_lines
-from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry
+from .db import DEFAULT_PRIORITY, STATUS_LABELS, Database, Entry, hours_text, span_text
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]+')
 _GENERATED_FILE = re.compile(r"^\d{2,}_.+\.(png|jpg)$", re.IGNORECASE)
@@ -42,9 +42,16 @@ def continued_since(db: Database, entry: Entry) -> str | None:
     return history[0].date if history else None
 
 
+def report_span(entry: Entry) -> str:
+    """「09:00–10:30 1.5h」；時長 0 只寫一個時間。"""
+    if entry.minutes == 0:
+        return entry.start or entry.time
+    return f"{span_text(entry, duration=False)} {hours_text(entry.minutes)}"
+
+
 def format_entry_line(entry: Entry, image_refs: list[str], since: str | None = None,
                       change: EntryChange | None = None) -> str:
-    head = f"[{entry.time}][{STATUS_LABELS[entry.status]}][優先{entry.priority}]"
+    head = f"[{report_span(entry)}][{STATUS_LABELS[entry.status]}][優先{entry.priority}]"
     if entry.category:
         head += f"[分類：{entry.category}]"
     if entry.tags:

@@ -191,12 +191,18 @@ def test_legacy_v1_bundle_matches_golden(tmp_path):
     md = (generate_report(db, "2026-11-02", tmp_path / "out", (GOLDEN / "instructions.md").read_text(
         encoding="utf-8")) / "report.md").read_text(encoding="utf-8")
     expected = (GOLDEN / "basic" / "expected_report.md").read_text(encoding="utf-8")
+    # 第 1 版沒有起訖時間：由 time 回推（見 test_times.py 的 DERIVED）
+    for golden, derived in (("[09:00–09:30 0.5h]", "[09:30]"), ("[13:30–14:05 0.58h]", "[10:20–14:05 3.75h]"),
+                            ("[16:40]", "[14:05–16:40 2.58h]")):
+        expected = expected.replace(golden, derived)
     # 第 1 版沒有進度與分類優先度：「分類資訊」照原本的順序、沒有附註，其他內容相同
     start, end = expected.index("\n## 分類資訊\n"), expected.index("\n[附圖1]")
     v1_section = "\n## 分類資訊\n- 開發\n- 開發 › 專案A\n- 會議\n- 支援\n- 支援 › 客戶X\n"
     assert md == expected[:start] + v1_section + expected[end:]
     v2 = json.loads((LEGACY / "bundle_v2.json").read_text(encoding="utf-8"))
-    assert [{k: v for k, v in e.items() if k not in ("start_time", "end_time")} for e in snapshot(db)["entries"]]         == v2["entries"]
+    without_times = [{k: v for k, v in e.items() if k not in ("start_time", "end_time")}
+                     for e in snapshot(db)["entries"]]
+    assert without_times == v2["entries"]
 
 
 # ---- 產出 ----

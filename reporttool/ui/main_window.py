@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..changes import changes_for
 from ..config import Settings, load_instructions
-from ..db import STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, same_level_key
+from ..db import STATUS_ICONS, STATUS_LABELS, Category, Database, Entry, same_level_key, span_text
 from ..report import generate_range_report, generate_report
 from ..slides import export_slides
 from ..sync import BundleError, export_bundle, import_bundle, live_counts
@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
         self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
 
         self.tree = EntryTree()
-        self.tree.setHeaderLabels(["時間", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
+        self.tree.setHeaderLabels(["時段", "優先", "狀態", "分類", "Tags", "內容", "圖片"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         # 可以多選（Ctrl／Shift），把選取的紀錄拖到左邊的分類上
@@ -518,7 +518,7 @@ class MainWindow(QMainWindow):
         n_img = len(e.images)
         n_ai = sum(i.include for i in e.images)
         img_text = f"{n_img}" + (f"（{n_ai} 給 AI）" if n_ai != n_img else "") if n_img else ""
-        item = QTreeWidgetItem([e.time, str(e.priority), f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}",
+        item = QTreeWidgetItem([span_text(e), str(e.priority), f"{STATUS_ICONS[e.status]} {STATUS_LABELS[e.status]}",
                                 e.category, " ".join(f"#{t}" for t in e.tags), first_line, img_text])
         item.setTextAlignment(1, Qt.AlignCenter)
         if e.priority in PRIORITY_COLORS:
@@ -735,7 +735,7 @@ class MainWindow(QMainWindow):
         entries = [e for e in (self.db.get_entry(i) for i in self._selected_ids()) if e]
         if not entries:
             return
-        lines = "\n".join(f"[{e.time}] {e.summary[:60]}" for e in entries[:10])
+        lines = "\n".join(f"[{span_text(e, False)}] {e.summary[:60]}" for e in entries[:10])
         if len(entries) > 10:
             lines += f"\n…等共 {len(entries)} 筆"
         question = "確定刪除這筆紀錄？" if len(entries) == 1 else f"確定刪除這 {len(entries)} 筆紀錄？"

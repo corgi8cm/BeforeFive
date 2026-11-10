@@ -25,13 +25,14 @@ DEFAULT_INSTRUCTIONS = """\
 - 「## 分類資訊」依排列順序列出用到的分類：同一層的分類照這個順序排（已依優先度排好），有寫進度的在分類標題後面標上進度（例如 *專案A（40%）*）
 - 標有（延續自 MM-DD）的項目是從那天起持續進行的工作，可以在描述中帶出
 - 標有 ⇄ 的是和前一次紀錄相比的變化（前：／後：是改動的內容），用來說明這次的進展；「沒有變更」的項目簡短帶過即可
+- 每項開頭的 [09:00–10:30 1.5h] 是這件事的時段與花費時數，只有一個時間的表示沒有記下時長；需要時可以帶出花了多少時間
 - 只用紀錄和圖片中的內容，不要補充或編造
 - 參考圖片內容讓描述更具體，但保留（附圖N）標記
 - 用 Slack mrkdwn 格式，語氣簡潔、專業
 """
 
 _LINES = DEFAULT_INSTRUCTIONS.splitlines()
-CATEGORY_LINE, TAG_LINE, ORDER_LINE, PROGRESS_LINE, CONTINUED_LINE, CHANGES_LINE = _LINES[:6]
+CATEGORY_LINE, TAG_LINE, ORDER_LINE, PROGRESS_LINE, CONTINUED_LINE, CHANGES_LINE, TIME_LINE = _LINES[:7]
 # 舊版預設的那幾行要換成什麼。instructions.md 只在第一次執行時建立，程式更新後要自動換成新版；
 # 使用者自己改過的行對不上，就不會動。
 OLD_LINES = {
@@ -56,6 +57,8 @@ def upgrade_instructions(text: str) -> str:
         lines += OLD_LINES.get(line.strip(), [line])
     if "⇄" not in text and CONTINUED_LINE in lines:
         lines.insert(lines.index(CONTINUED_LINE) + 1, CHANGES_LINE)
+    if TIME_LINE not in lines and CHANGES_LINE in lines:  # 3.0.0：時段與時數
+        lines.insert(lines.index(CHANGES_LINE) + 1, TIME_LINE)
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 

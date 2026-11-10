@@ -153,8 +153,8 @@ class Entry:
 
 
 def same_level_key(entry: Entry) -> tuple:
-    """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依時間。"""
-    return entry.priority, entry.summary, entry.time
+    """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依起始時間。"""
+    return entry.priority, entry.summary, entry.start, entry.time
 
 
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -167,6 +167,57 @@ def is_clock(value) -> bool:
 def duration_minutes(start: str, end: str) -> int:
     (sh, sm), (eh, em) = (map(int, start.split(":")), map(int, end.split(":")))
     return (eh * 60 + em) - (sh * 60 + sm)
+
+
+def parse_clock(text: str) -> str:
+    """使用者輸入的時間轉成 HH:MM：接受「9:05」「09:05」「0905」「905」；空白回傳 ""，看不懂就 ValueError。"""
+    text = (text or "").strip().replace("：", ":")
+    if not text:
+        return ""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", text) or re.fullmatch(r"(\d{1,2})(\d{2})", text)
+    value = f"{int(m.group(1)):02d}:{m.group(2)}" if m else ""
+    if not is_clock(value):
+        raise ValueError(f"看不懂的時間：{text}（請用 HH:MM，例如 09:30）")
+    return value
+
+
+def resolve_times(start_text: str, end_text: str, *, date: str, today: str, now: str, editing: bool,
+                  follow_up: bool) -> tuple[str, str]:
+    """輸入視窗存檔時決定起訖時間（規則見 docs/v3-roadmap.md）。回傳 ("", "") 表示交給 save_entry 依「前一則」自動補。
+
+    不合規則時 ValueError，訊息可以直接顯示給使用者。"""
+    start, end = parse_clock(start_text), parse_clock(end_text)
+    if not start and not end:
+        if editing:
+            raise ValueError("起始和結束時間不能清空")
+        if date != today:
+            raise ValueError("補記別天的事，請填起始和結束時間")
+        return (now, now) if follow_up else ("", "")  # 追加進度：時長 0，不沿用前一筆
+    if date == today and end and end > now:  # 今天的紀錄結束時間最晚到現在
+        end = now
+    check_times(start, end)
+    return start, end
+
+
+def duration_text(minutes: int) -> str:
+    """清單用：「45 分」「2 小時」「1 小時 30 分」。"""
+    hours, rest = divmod(minutes, 60)
+    if not hours:
+        return f"{rest} 分"
+    return f"{hours} 小時" + (f" {rest} 分" if rest else "")
+
+
+def hours_text(minutes: int) -> str:
+    """回報用：90 → 「1.5h」，50 → 「0.83h」，60 → 「1h」。"""
+    return f"{minutes / 60:.2f}".rstrip("0").rstrip(".") + "h"
+
+
+def span_text(entry: "Entry", duration: bool = True) -> str:
+    """「09:00–10:30（1 小時 30 分）」；時長 0 只寫一個時間。"""
+    if not entry.start or entry.start == entry.end:
+        return entry.start or entry.time
+    text = f"{entry.start}–{entry.end}"
+    return text + f"（{duration_text(entry.minutes)}）" if duration else text
 
 
 def check_times(start: str, end: str):
@@ -531,7 +582,7 @@ class Database:
                     stack.append(c)
         marks = ",".join("?" * len(members))
         found = self.conn.execute(
-            f"SELECT * FROM entries WHERE id IN ({marks}) AND {LIVE} ORDER BY date, time, id", members).fetchall()
+            f"SELECT * FROM entries WHERE id IN ({marks}) AND {LIVE} ORDER BY date, start_time, time, id", members).fetchall()
         return [self._load(r) for r in found]
 
     def entries_for_date(self, date: str) -> list[Entry]:
@@ -540,7 +591,8 @@ class Database:
     def entries_between(self, start: str, end: str) -> list[Entry]:
         """取得日期區間（含頭尾）內的紀錄，供週報等功能使用。"""
         rows = self.conn.execute(
-            f"SELECT * FROM entries WHERE date BETWEEN ? AND ? AND {LIVE} ORDER BY date, time, created_at, id",
+            f"SELECT * FROM entries WHERE date BETWEEN ? AND ? AND {LIVE}"
+            " ORDER BY date, start_time, time, created_at, id",
             (start, end)).fetchall()
         return [self._load(r) for r in rows]
 
