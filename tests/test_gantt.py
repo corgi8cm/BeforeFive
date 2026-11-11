@@ -123,3 +123,23 @@ def test_range_dialog_defaults_to_viewed_day(qapp, db, tmp_path, monkeypatch):
     dlg = win.open_gantt()
     assert seen == [("2026-11-03", "2026-11-03")]
     assert dlg.view.gantt.single_day and dlg.start == "2026-11-03"
+
+
+def test_toolbar_button_opens_range_then_gantt(qapp, db, tmp_path, monkeypatch):
+    """真的按主視窗的按鈕：clicked 會帶 checked=False，不能被當成起始日期。"""
+    from PySide6.QtWidgets import QPushButton
+
+    win = MainWindow(db, load_settings(tmp_path / "config"))
+    win.date_edit.setDate(QDate(2026, 11, 2))
+    seen = []
+
+    def fake_exec(self):
+        seen.append(self.range())
+        return QDialog.Accepted
+
+    monkeypatch.setattr(RangeDialog, "exec", fake_exec)
+    button = next(b for b in win.findChildren(QPushButton) if "甘特圖" in b.text())
+    button.click()
+    assert seen == [("2026-11-02", "2026-11-02")]
+    dialogs = [d for d in win.findChildren(GanttDialog) if d.isVisible()]
+    assert len(dialogs) == 1 and dialogs[0].start == "2026-11-02"

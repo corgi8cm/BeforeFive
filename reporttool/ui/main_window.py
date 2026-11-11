@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
         self.search_box.setFixedWidth(200)
         self.search_box.returnPressed.connect(lambda: self.open_search(self.search_box.text()))
         bottom.addWidget(self.search_box)
-        bottom.addWidget(button("📈 甘特圖", self.open_gantt, "把一天或一段期間的紀錄畫成甘特圖，可以存成 PNG"))
+        bottom.addWidget(button("📈 甘特圖", lambda: self.open_gantt(),"把一天或一段期間的紀錄畫成甘特圖，可以存成 PNG"))
         QShortcut(QKeySequence.Find, self, activated=lambda: (self.search_box.setFocus(), self.search_box.selectAll()))
         bottom.addStretch()
         bottom.addWidget(button("管理分類與標籤", self.manage))
