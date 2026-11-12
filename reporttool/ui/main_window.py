@@ -407,7 +407,8 @@ class MainWindow(QMainWindow):
         """每個分類（含子分類）在這一天的紀錄數與時數。"""
         parents = {n.id: n.parent_id for n in self._nodes}
         counts, none_count, all_count = roll_up(entries, parents)
-        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: e.minutes)
+        counted = self.db.counted_minutes(entries)  # 同一件工作起訖相同的只算一次
+        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: counted[e.id])
         counts.update({ALL: all_count, UNCATEGORIZED: none_count})
         minutes.update({ALL: all_minutes, UNCATEGORIZED: none_minutes})
         it = QTreeWidgetItemIterator(self.sidebar)
@@ -715,7 +716,7 @@ class MainWindow(QMainWindow):
         """選範圍（預設是正在看的這一天）後另開甘特圖視窗；雙擊長條跳到那筆紀錄。"""
         if start is None:
             dlg = RangeDialog(QDate.currentDate(), self, "甘特圖範圍", "畫出來",
-                              "只選一天：橫軸是時間，每筆紀錄一條。選好幾天：橫軸是日期，每件工作一列。",
+                              "只選一天：橫軸是時間，每筆紀錄一條。選好幾天：每件工作一列，幾天的時間接起來依實際時間畫。",
                               self.date_edit.date())
             if dlg.exec() != QDialog.Accepted:
                 return None

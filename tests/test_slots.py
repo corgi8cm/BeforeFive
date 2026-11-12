@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from reporttool.db import SCHEMA_VERSION, Database, Entry, resolve_times, snap_clock
+from reporttool.db import SCHEMA_VERSION, Database, Entry, resolve_span, snap_clock
 from reporttool.sync import import_bundle, snapshot
 
 DATE = "2026-11-02"
@@ -29,15 +29,15 @@ def test_snap_clock(value, snapped):
     assert snap_clock(value) == snapped
 
 
-def test_resolve_times_snaps_and_clamps_to_snapped_now():
+def test_resolve_span_snaps_and_clamps_to_snapped_now():
     def rt(start, end, now):
-        return resolve_times(start, end, date=DATE, today=DATE, now=now, editing=False, follow_up=False)
+        return resolve_span(start, end, date=DATE, today=DATE, now=now, editing=False, follow_up=False)[1::2]
 
     assert rt("9:07", "1052", "15:00") == ("09:00", "10:45")
     assert rt("16:00", "17:15", "17:08") == ("16:00", "17:15")  # 17:08 取整是 17:15，不算超過現在
     assert rt("16:00", "18:00", "17:05") == ("16:00", "17:00")
-    assert resolve_times("", "", date=DATE, today=DATE, now="17:08", editing=False, follow_up=True) == \
-        ("17:15", "17:15")
+    assert resolve_span("", "", date=DATE, today=DATE, now="17:08", editing=False, follow_up=True) == \
+        (DATE, "17:15", DATE, "17:15")
 
 
 def test_save_entry_snaps_filled_and_auto_times(tmp_path):
@@ -51,14 +51,6 @@ def test_save_entry_snaps_filled_and_auto_times(tmp_path):
     assert (c.start, c.end) == ("10:15", "11:45")
     with pytest.raises(ValueError):  # 格式不對的還是會擋下來，不會在取整時當掉
         db.save_entry(Entry(None, DATE, "11:00", "x", "done", start="9:0", end="10:00"))
-
-
-def test_carry_over_snaps_now(tmp_path):
-    db = Database(tmp_path)
-    db.save_entry(Entry(None, "2026-11-01", "17:00", "做一半", "doing", start="13:00", end="17:00"))
-    (new_id,) = db.carry_over("2026-11-01", DATE, "09:08")
-    e = db.get_entry(new_id)
-    assert (e.start, e.end) == ("09:15", "09:15")
 
 
 def test_migrates_v8_database_snaps_all_times(tmp_path):
@@ -75,7 +67,7 @@ def test_migrates_v8_database_snaps_all_times(tmp_path):
     db.close()
 
     db = Database(tmp_path)
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert (tmp_path / "reporttool-before-v9.db").exists()
     with sqlite3.connect(tmp_path / "reporttool-before-v9.db") as old:  # 備份是升級前的樣子
         assert old.execute("SELECT start_time FROM entries WHERE id=?", (odd,)).fetchone()[0] == "10:07"

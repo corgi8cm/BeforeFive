@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 from reporttool.config import load_settings
 from reporttool.db import Database, Entry
 from reporttool.gantt import build_gantt
-from reporttool.ui.gantt_dialog import HEADER_H, ROW_H, GanttDialog
+from reporttool.ui.gantt_dialog import HEADER_H, ROW_H, GanttDialog, GanttView
 from reporttool.ui.main_window import MainWindow
 from reporttool.ui.range_dialog import RangeDialog
 
@@ -61,13 +61,32 @@ def test_single_day_rows_and_axis(db):
 
 def test_multi_day_rows_merge_chain(db):
     g = build_gantt(db, "2026-11-01", "2026-11-07")
-    assert not g.single_day and g.axis_end == 7 and g.days[0] == "2026-11-01"
+    # 每天的時間窗一樣：09:00 起，11-05 加班到 19:30，所以到 20:00；7 天接起來
+    assert not g.single_day and g.window == (540, 1200) and g.days[0] == "2026-11-01" and len(g.days) == 7
+    assert (g.axis_start, g.axis_end) == (0, 7 * 660)
     # 整條鏈一列，分類用範圍內最新那筆的（開發 › 專案A）
     assert labels(g) == ["# 開發", "加班", "# 開發 › 專案A", "登入 timeout", "# 會議", "週會", "# 未分類", "整理文件"]
     chain = g.rows[3]
-    assert [(b.start, b.end, b.status) for b in chain.bars] == [(1, 2, "doing"), (2, 3, "done")]  # 同一天用最晚那筆
-    assert "（共 3 小時）" in chain.bars[1].tooltip and "改設定檔" in chain.bars[1].tooltip
+    # 依實際時間畫：11-02（第 1 天）09:00–11:00；11-03（第 2 天）13:00–15:00、15:00–16:00
+    assert [(b.start, b.end, b.status) for b in chain.bars] == [
+        (660, 780, "doing"), (1320 + 240, 1320 + 360, "review"), (1320 + 360, 1320 + 420, "done")]
+    assert "改設定檔" in chain.bars[1].tooltip and "11-03（二） 13:00–15:00（2 小時）" in chain.bars[1].tooltip
     assert "範圍內 3 筆、2 天，合計 5 小時" in chain.tooltip
+
+
+def test_multi_day_window_and_scale(db, qapp):
+    from reporttool.ui.gantt_dialog import LABEL_W, PAD
+    g = build_gantt(db, "2026-11-02", "2026-11-03")
+    assert g.window == (540, 1080)  # 沒有早晚的紀錄：09:00~18:00
+    view = GanttView(g)
+    assert view.scale * 15 >= 6  # 兩天：15 分鐘一格夠寬，畫 15 分鐘格線
+    assert view.minor_ticks()[:3] == [15, 30, 45] and 540 not in view.minor_ticks()
+    assert view.width() == int(LABEL_W + 2 * 540 * view.scale + PAD)
+    i = next(i for i, r in enumerate(g.rows) if r.label == "登入 timeout")
+    widths = [view.bar_rect(i, b).width() for b in g.rows[i].bars]
+    assert widths == pytest.approx([120 * view.scale, 120 * view.scale, 60 * view.scale])  # 長條長度依時長等比例
+    long = GanttView(build_gantt(db, "2026-10-01", "2026-11-30"))  # 兩個月：每小時 16px，不畫 15 分鐘格線
+    assert long.scale * 60 == 16 and long.minor_ticks() == []
 
 
 def test_empty_range(db):
@@ -79,7 +98,7 @@ def test_double_click_jumps_and_png(qapp, db, tmp_path):
     win = MainWindow(db, load_settings(tmp_path / "config"))
     dlg = win.open_gantt("2026-11-01", "2026-11-07")
     view = dlg.view
-    rect = view.bar_rect(3, view.gantt.rows[3].bars[1])  # 鏈在 11-03 那天的色塊
+    rect = view.bar_rect(3, view.gantt.rows[3].bars[2])  # 鏈在 11-03 15:00–16:00 那段
     pos = rect.center()
     event = QMouseEvent(QMouseEvent.MouseButtonDblClick, QPointF(pos), QPointF(view.mapToGlobal(pos.toPoint())),
                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)

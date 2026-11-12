@@ -73,13 +73,14 @@ def test_filled_times_are_kept_and_validated(tmp_path):
     assert [x.text for x in db.entries_for_date(DATE)] == ["a"]  # 不合規則的什麼都不寫入
 
 
-def test_carry_over_has_zero_duration(tmp_path):
+def test_carry_over_keeps_original_span(tmp_path):
     db = Database(tmp_path)
     db.save_entry(Entry(None, "2026-11-01", "17:00", "做一半", "doing", start="13:00", end="17:00"))
     db.save_entry(Entry(None, DATE, "08:50", "早上先記的", "done", start="08:00", end="08:50"))
     (new_id,) = db.carry_over("2026-11-01", DATE, "09:00")
     e = db.get_entry(new_id)
-    assert (e.start, e.end) == ("09:00", "09:00")  # 不沿用前一筆，也不套前一則規則
+    # 3.1：沿用原本的時段（含日期），不套前一則規則
+    assert (e.time, e.span_key) == ("09:00", ("2026-11-01", "13:00", "2026-11-01", "17:00"))
 
 
 # ---- 資料庫升級 ----
@@ -161,10 +162,10 @@ def test_v3_bundle_requires_valid_times(start, end, tmp_path):
 
 
 def test_unknown_version_rejected(tmp_path):
-    """2.x 的 SUPPORTED_VERSIONS 是 (1, 2)，讀到第 3 版會拒絕；同樣地這版也拒絕更新的版本。"""
+    """2.x 的 SUPPORTED_VERSIONS 是 (1, 2)、3.0 是 (1, 2, 3)，讀到更新的版本會拒絕；這版也一樣。"""
     db = Database(tmp_path)
     data = snapshot(db)
-    data["version"] = 4
+    data["version"] = 5
     with pytest.raises(BundleError):
         merge(db, data, lambda rel: None)
 
@@ -183,7 +184,7 @@ def test_two_devices_converge_with_times(tmp_path):
 
 # ---- 第 1 步：輸入規則與顯示 ----
 
-from reporttool.db import duration_text, hours_text, parse_clock, resolve_times, span_text  # noqa: E402
+from reporttool.db import duration_text, hours_text, parse_clock, resolve_span, span_text  # noqa: E402
 
 
 @pytest.mark.parametrize("text, value", [("", ""), (" 9:05 ", "09:05"), ("09:05", "09:05"), ("0905", "09:05"),
@@ -199,10 +200,10 @@ def test_parse_clock_rejects(text):
 
 
 def rt(start, end, date=DATE, editing=False, follow_up=False):
-    return resolve_times(start, end, date=date, today=DATE, now="15:00", editing=editing, follow_up=follow_up)
+    return resolve_span(start, end, date=date, today=DATE, now="15:00", editing=editing, follow_up=follow_up)[1::2]
 
 
-def test_resolve_times():
+def test_resolve_span():
     assert rt("", "") == ("", "")  # 今天的新紀錄：交給 save_entry 自動補
     assert rt("", "", follow_up=True) == ("15:00", "15:00")  # 追加進度：時長 0
     assert rt("9:00", "1030") == ("09:00", "10:30")
