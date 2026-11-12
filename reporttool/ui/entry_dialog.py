@@ -4,16 +4,16 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtCore import QDate, QModelIndex, Qt, Signal
 from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QButtonGroup, QCheckBox, QComboBox, QCompleter, QDateEdit, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..db import (
-    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_clock, parse_day, parse_tags,
-    resolve_span, short_day, snap_clock, span_text,
+    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_clock, parse_tags, resolve_span,
+    snap_clock, span_text,
 )
 from .category_picker import CategoryPicker
 
@@ -48,27 +48,19 @@ def time_field(placeholder: str, tip: str) -> QLineEdit:
     return edit
 
 
-def date_field(placeholder: str, ref: str) -> QLineEdit:
-    """時段的日期：空白＝紀錄那天（ref）。打完就整理成「MM-DD」（不同年寫完整日期）。"""
-    edit = QLineEdit()
-    edit.setPlaceholderText(placeholder)
-    edit.setToolTip("這段時間是哪一天（MM-DD 或 YYYY-MM-DD，也可以打 1110）。\n"
-                    "空白＝紀錄這一天；跨午夜、跨好幾天的工作把結束日期設成後來那天。")
-    edit.setMaxLength(10)
-    edit.setFixedWidth(92)
-    edit.setAlignment(Qt.AlignCenter)
-
-    def tidy():  # 看不懂的留著，存檔時再提醒
-        try:
-            value = parse_day(edit.text(), ref)
-        except ValueError:
-            return
-        shown = short_day(value, ref) if value else ""
-        if shown != edit.text():
-            edit.setText(shown)
-
-    edit.editingFinished.connect(tidy)
+def date_field(tip: str, ref: str) -> QDateEdit:
+    """時段的日期：按右邊的箭頭從日曆選，也可以直接打。預設是紀錄那天（ref）。"""
+    edit = QDateEdit(QDate.fromString(ref, "yyyy-MM-dd"))
+    edit.setCalendarPopup(True)
+    edit.setDisplayFormat("yyyy-MM-dd")
+    edit.setToolTip(f"{tip}：按右邊的箭頭從日曆選。預設是紀錄這一天；\n跨午夜、跨好幾天的工作把結束日期設成後來那天。")
+    edit.setFixedWidth(116)
+    edit.calendarWidget().setGridVisible(True)
     return edit
+
+
+def date_value(edit: QDateEdit) -> str:
+    return edit.date().toString("yyyy-MM-dd")
 
 
 TIME_TIP = ("這件事的起訖時間（HH:MM，也可以打 0930），以 15 分鐘為一格，會四捨五入（09:07→09:00）。\n"
@@ -295,7 +287,7 @@ class EntryDialog(QDialog):
         self.priority_box.setToolTip("執行優先順序，主視窗同一組內優先的排前面")
         status_row.addWidget(self.priority_box)
 
-        # 時段：日期空白＝紀錄這一天
+        # 時段：日期預設是紀錄這一天，可以從下拉日曆選
         self.start_date_edit = date_field("起始日期", self.entry_date)
         self.start_edit = time_field("起始", TIME_TIP)
         self.end_date_edit = date_field("結束日期", self.entry_date)
@@ -307,9 +299,6 @@ class EntryDialog(QDialog):
         span_row.addWidget(QLabel("–"))
         span_row.addWidget(self.end_date_edit)
         span_row.addWidget(self.end_edit)
-        hint = QLabel(f"日期空白＝這一天（{self.entry_date[5:]}）")
-        hint.setStyleSheet("color:#888;")
-        span_row.addWidget(hint)
         span_row.addStretch()
 
         # 分類 + tags
@@ -410,9 +399,9 @@ class EntryDialog(QDialog):
             btn.setChecked(btn.property("status") == entry.status)
         self._set_category(entry.category_id)
         start_date, start, end_date, end = entry.span_key
-        self.start_date_edit.setText("" if start_date == entry.date else short_day(start_date, entry.date))
+        self.start_date_edit.setDate(QDate.fromString(start_date, "yyyy-MM-dd"))
         self.start_edit.setText(start)
-        self.end_date_edit.setText("" if end_date == entry.date else short_day(end_date, entry.date))
+        self.end_date_edit.setDate(QDate.fromString(end_date, "yyyy-MM-dd"))
         self.end_edit.setText(end)
         self.title_edit.setText(entry.title)
         self._set_priority(entry.priority)
@@ -447,6 +436,11 @@ class EntryDialog(QDialog):
 
     # ---- 儲存 ----
 
+    def _span_date(self, edit: QDateEdit) -> str:
+        """選的日期；還是紀錄那天時回傳 ""（等於沒改，起訖都空白時照樣自動補）。"""
+        value = date_value(edit)
+        return "" if value == self.entry_date else value
+
     def save(self):
         title = self.title_edit.text().strip()
         text = self.text.toPlainText().strip()
@@ -458,8 +452,9 @@ class EntryDialog(QDialog):
         try:
             span = resolve_span(self.start_edit.text(), self.end_edit.text(), date=self.entry_date,
                                 today=today, now=now, editing=self.entry is not None,
-                                follow_up=self.follow_up_of is not None, start_date_text=self.start_date_edit.text(),
-                                end_date_text=self.end_date_edit.text())
+                                follow_up=self.follow_up_of is not None,
+                                start_date_text=self._span_date(self.start_date_edit),
+                                end_date_text=self._span_date(self.end_date_edit))
         except ValueError as e:
             QMessageBox.warning(self, "時段不正確", str(e))
             self.start_edit.setFocus()

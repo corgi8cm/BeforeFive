@@ -182,10 +182,14 @@ def test_gantt_single_day_clips_and_notes(carried):
 def test_gantt_multi_day_covers_span_days(carried):
     g = build_gantt(carried, "2026-10-30", "2026-11-03")
     (row,) = [r for r in g.rows if not r.group]
-    # 10-31、11-01 是時段涵蓋的日子；11-03 有收尾那段；11-02 帶入的那筆時段不在 11-02
-    assert [(b.start, b.status) for b in row.bars] == [(1, "doing"), (2, "doing"), (4, "done")]
+    # 跨夜的時段讓時間窗變成整天；三筆起訖相同只畫一次，跨夜分成 10-31、11-01 兩段（接在一起）；11-03 是收尾那段
+    assert g.window == (0, 1440)
+    day = 1440
+    assert [(b.start, b.end, b.status) for b in row.bars] == [
+        (day + 22 * 60, 2 * day, "doing"), (2 * day, 2 * day + 120, "doing"), (4 * day + 780, 4 * day + 900, "done")]
+    latest = carried.entries_for_date("2026-11-03")[0]
+    assert row.bars[0].entry_id == latest.id  # 相同時段用最晚那筆
     assert "範圍內 4 筆、3 天，合計 6 小時" in row.tooltip
-    assert "（這天共" not in row.bars[1].tooltip  # 三筆時段相同，只算一段
 
 
 # ---- 資料庫升級、資料包 ----
@@ -240,15 +244,18 @@ def test_v4_bundle_validates_dates(carried, tmp_path, change):
 def test_dialog_date_fields(qapp, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
-    from reporttool.ui.entry_dialog import EntryDialog
+    from PySide6.QtCore import QDate
+
+    from reporttool.ui.entry_dialog import EntryDialog, date_value
     shown = []
     monkeypatch.setattr(QMessageBox, "warning", lambda _p, _t, text, *a: shown.append(text))
     db = Database(tmp_path)
     dlg = EntryDialog(db, DATE)
+    # 下拉日曆，預設是紀錄那天；沒改日期、起訖都空白時照樣自動補（見 test_times）
+    assert dlg.start_date_edit.calendarPopup() and dlg.end_date_edit.calendarPopup()
+    assert date_value(dlg.start_date_edit) == date_value(dlg.end_date_edit) == DATE
     dlg.text.setPlainText("跨夜部署")
-    dlg.start_date_edit.setText("1101")
-    dlg.start_date_edit.editingFinished.emit()
-    assert dlg.start_date_edit.text() == "11-01"  # 整理成 MM-DD
+    dlg.start_date_edit.setDate(QDate(2026, 11, 1))
     dlg.save()
     assert shown == ["填了日期也要填起始和結束時間"] and db.entries_for_date(DATE) == []
     dlg.start_edit.setText("22:00")
@@ -258,5 +265,5 @@ def test_dialog_date_fields(qapp, tmp_path, monkeypatch):
     assert span(e) == ("2026-11-01", "22:00", DATE, "02:00")
 
     edit = EntryDialog(db, DATE, db.get_entry(e.id))
-    assert (edit.start_date_edit.text(), edit.start_edit.text()) == ("11-01", "22:00")
-    assert (edit.end_date_edit.text(), edit.end_edit.text()) == ("", "02:00")  # 紀錄那天不寫日期
+    assert (date_value(edit.start_date_edit), edit.start_edit.text()) == ("2026-11-01", "22:00")
+    assert (date_value(edit.end_date_edit), edit.end_edit.text()) == (DATE, "02:00")

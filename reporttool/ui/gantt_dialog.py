@@ -17,18 +17,20 @@ LABEL_W = 280  # 左邊標題欄
 ROW_H = 24
 HEADER_H = 34
 PAD = 12  # 右邊與下方留白
-PX_PER_HOUR = 96  # 15 分鐘一格 24px
+PX_PER_HOUR = 96  # 單日：15 分鐘一格 24px
+DAY_LINE = QColor("#b8bec6")  # 好幾天時每天的分界
 GRID = QColor("#d5d9de")
 MINOR_GRID = QColor("#eef0f3")  # 15 分鐘格線
+MIN_SLOT_PX = 6  # 15 分鐘一格比這窄時不畫 15 分鐘格線
 GROUP_BG = QColor("#f1f3f5")
 WEEKEND_BG = QColor("#f7f7f9")
 TEXT = QColor("#333333")
 MUTED = QColor("#888888")
 
 
-def day_px(days: int) -> float:
-    """好幾天時每一天的寬度：天數少時寬一點，一個月左右約 28px。"""
-    return max(28.0, min(120.0, 860 / days))
+def multi_day_px_per_hour(hours: float) -> float:
+    """好幾天時每小時的寬度：總時數少時寬一點（一週約 48px），很長時至少 16px（再窄就看不出 15 分鐘）。"""
+    return max(16.0, min(48.0, 3200 / hours))
 
 
 class GanttView(QWidget):
@@ -43,9 +45,10 @@ class GanttView(QWidget):
         pal.setColor(self.backgroundRole(), Qt.white)
         self.setPalette(pal)
         if gantt.single_day:
-            self.scale = PX_PER_HOUR / 60  # 每分鐘幾 px
+            px_per_hour = PX_PER_HOUR
         else:
-            self.scale = day_px(int(gantt.axis_end))
+            px_per_hour = multi_day_px_per_hour(len(gantt.days) * gantt.day_length / 60)
+        self.scale = px_per_hour / 60  # 每分鐘幾 px，單日和好幾天都依實際時間等比例
         width = LABEL_W + (gantt.axis_end - gantt.axis_start) * self.scale + PAD
         self.setFixedSize(int(width), HEADER_H + len(gantt.rows) * ROW_H + PAD)
 
@@ -63,37 +66,43 @@ class GanttView(QWidget):
             x = self.x_of(bar.start)
             return QRectF(x - 6, top + 6, 12, ROW_H - 12)
         x0, x1 = self.x_of(bar.start), self.x_of(bar.end)
-        inset = 0 if self.gantt.single_day else 1.5  # 好幾天時相鄰的天之間留一點縫
-        return QRectF(x0 + inset, top + 5, max(x1 - x0 - 2 * inset, 3), ROW_H - 10)
+        return QRectF(x0, top + 5, max(x1 - x0, 3), ROW_H - 10)
 
     def hit(self, pos) -> tuple[Row | None, Bar | None]:
         i = int((pos.y() - HEADER_H) // ROW_H)
         if pos.y() < HEADER_H or not 0 <= i < len(self.gantt.rows):
             return None, None
         row = self.gantt.rows[i]
-        for bar in row.bars:
+        for bar in reversed(row.bars):  # 重疊時後畫的在上面
             if self.bar_rect(i, bar).adjusted(-2, -3, 2, 3).contains(pos):
                 return row, bar
         return row, None
 
-    # ---- 畫圖 ----
+    # ---- 刻度 ----
 
-    def ticks(self) -> list[tuple[float, str, bool]]:
-        """（位置, 文字, 是否是週末）。"""
+    def hour_ticks(self) -> list[tuple[float, int]]:
+        """（位置, 幾點）：每天時間窗內的整點，含時間窗頭尾。"""
+        g = self.gantt
+        w0, w1 = g.window
+        return [(g.position(i, h * 60), h) for i in range(len(g.days)) for h in range(w0 // 60, w1 // 60 + 1)]
+
+    def minor_ticks(self) -> list[float]:
+        """整點之間每 15 分鐘的位置；一格太窄時不畫。"""
+        g = self.gantt
+        if SLOT_MINUTES * self.scale < MIN_SLOT_PX:
+            return []
+        w0, w1 = g.window
+        return [g.position(i, m) for i in range(len(g.days)) for m in range(w0, w1, SLOT_MINUTES) if m % 60]
+
+    def day_ticks(self) -> list[tuple[float, str, bool]]:
+        """好幾天時：（這天開始的位置, 「11-02（一）」, 是否週末）。"""
         g = self.gantt
         if g.single_day:
-            return [(m, f"{m // 60:02d}:00", False) for m in range(int(g.axis_start), int(g.axis_end) + 1, 60)]
-        result = []
-        for i, day in enumerate(g.days):
-            w = weekday(day)
-            text = f"{day[5:]}\n{w}" if self.scale >= 40 else (f"{int(day[8:])}\n{w}")
-            result.append((i, text, w in "六日"))
-        return result
+            return []
+        return [(g.position(i, g.window[0]), f"{day[5:]}（{weekday(day)}）", weekday(day) in "六日")
+                for i, day in enumerate(g.days)]
 
-    def minor_ticks(self) -> list[int]:
-        """單日檢視：整點之間每 15 分鐘的位置（分鐘）。"""
-        g = self.gantt
-        return [m for m in range(int(g.axis_start), int(g.axis_end), SLOT_MINUTES) if m % 60]
+    # ---- 畫圖 ----
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -102,39 +111,52 @@ class GanttView(QWidget):
         chart_bottom = HEADER_H + len(g.rows) * ROW_H
         small = QFont(self.font())
         small.setPointSizeF(max(self.font().pointSizeF() - 1, 7))
+        day_w = g.day_length * self.scale
 
-        # 週末底色與格線
-        for value, text, weekend in self.ticks():
-            x = self.x_of(value)
+        # 週末底色、分組底色與格線
+        for value, _text, weekend in self.day_ticks():
             if weekend:
-                p.fillRect(QRectF(x, HEADER_H, self.scale, chart_bottom - HEADER_H), WEEKEND_BG)
+                p.fillRect(QRectF(self.x_of(value), HEADER_H, day_w, chart_bottom - HEADER_H), WEEKEND_BG)
         for i, row in enumerate(g.rows):
             if row.group:
                 p.fillRect(self.row_rect(i), GROUP_BG)
-        if g.single_day:  # 每 15 分鐘一條淡格線，整點的用下面的深色
-            p.setPen(QPen(MINOR_GRID, 1))
-            for m in self.minor_ticks():
-                x = self.x_of(m)
-                p.drawLine(QPointF(x, HEADER_H), QPointF(x, chart_bottom))
-        p.setPen(QPen(GRID, 1))
-        for value, _text, _weekend in self.ticks():
+        p.setPen(QPen(MINOR_GRID, 1))
+        for value in self.minor_ticks():
             x = self.x_of(value)
-            p.drawLine(QPointF(x, HEADER_H - 4), QPointF(x, chart_bottom))
+            p.drawLine(QPointF(x, HEADER_H), QPointF(x, chart_bottom))
+        p.setPen(QPen(GRID, 1))
+        hour_top = HEADER_H - 4 if g.single_day else HEADER_H
+        for value, _hour in self.hour_ticks():
+            x = self.x_of(value)
+            p.drawLine(QPointF(x, hour_top), QPointF(x, chart_bottom))
+        p.setPen(QPen(DAY_LINE, 1))
+        for value, _text, _weekend in self.day_ticks():
+            x = self.x_of(value)
+            p.drawLine(QPointF(x, 0), QPointF(x, chart_bottom))
         if not g.single_day:  # 最後一天的右邊界
             x = self.x_of(g.axis_end)
-            p.drawLine(QPointF(x, HEADER_H - 4), QPointF(x, chart_bottom))
+            p.drawLine(QPointF(x, 0), QPointF(x, chart_bottom))
+        p.setPen(QPen(GRID, 1))
         p.drawLine(QPointF(LABEL_W, HEADER_H), QPointF(self.width() - PAD, HEADER_H))
         p.drawLine(QPointF(LABEL_W - 0.5, 0), QPointF(LABEL_W - 0.5, chart_bottom))
 
         # 刻度文字
         p.setFont(small)
         p.setPen(MUTED)
-        for value, text, _weekend in self.ticks():
-            x = self.x_of(value)
-            if g.single_day:
-                p.drawText(QRectF(x - 30, 0, 60, HEADER_H - 6), Qt.AlignHCenter | Qt.AlignBottom, text)
-            else:
-                p.drawText(QRectF(x, 0, self.scale, HEADER_H - 4), Qt.AlignCenter, text)
+        if g.single_day:
+            for value, hour in self.hour_ticks():
+                x = self.x_of(value)
+                p.drawText(QRectF(x - 30, 0, 60, HEADER_H - 6), Qt.AlignHCenter | Qt.AlignBottom, f"{hour:02d}:00")
+        else:
+            half = HEADER_H / 2
+            for value, text, _weekend in self.day_ticks():
+                p.drawText(QRectF(self.x_of(value), 0, day_w, half), Qt.AlignCenter, text)
+            step = 1 if self.scale * 60 >= 30 else 3  # 每小時太窄時每 3 小時寫一次
+            edges = {g.window[0] // 60, g.window[1] // 60}  # 每天頭尾在分界線上，不寫
+            for value, hour in self.hour_ticks():
+                if hour % step == 0 and hour not in edges:
+                    x = self.x_of(value)
+                    p.drawText(QRectF(x - 15, half, 30, half - 2), Qt.AlignHCenter | Qt.AlignBottom, f"{hour:02d}")
 
         # 每一列：標題與長條
         bold = QFont(self.font())
@@ -249,7 +271,7 @@ class GanttDialog(QDialog):
 
     def change_range(self):
         dlg = RangeDialog(QDate.currentDate(), self, "甘特圖範圍", "畫出來", "只選一天：橫軸是時間，每筆紀錄一條。"
-                          "選好幾天：橫軸是日期，每件工作一列。", QDate.fromString(self.start, "yyyy-MM-dd"))
+                          "選好幾天：每件工作一列，幾天的時間接起來依實際時間畫。", QDate.fromString(self.start, "yyyy-MM-dd"))
         if dlg.exec() == QDialog.Accepted:
             self.show_range(*dlg.range())
 

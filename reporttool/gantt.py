@@ -2,7 +2,9 @@
 
 - 只選一天（day 模式）：橫軸是時間，每筆紀錄一列，畫成起始到結束的長條；時長 0 畫成一個點。
   時段跨到別天的只畫這天的部分；時段完全不在這天的（例如帶入的紀錄沿用前一天的時段）只寫出時段、不畫長條。
-- 選好幾天（days 模式）：橫軸是日期，每件工作（一條延續鏈，分法同範圍整理）一列，時段涵蓋的那幾天畫成色塊。
+- 選好幾天（days 模式）：每件工作（一條延續鏈，分法同範圍整理）一列。橫軸是幾天接起來的時間，
+  每天都只畫同一個時間窗（至少 09:00~18:00，有更早或更晚的時段就加寬到整點），長條依實際時間畫；
+  時段跨過時間窗外（例如跨夜）時，每天各畫落在時間窗內的那段。同一件工作起訖相同的時段只畫一次。
 - 兩種都依分類樹分組（工作用範圍內最新那筆的分類），顏色用狀態的顏色。
 - 列哪些紀錄看紀錄的日期（和範圍整理相同），畫在哪裡看時段。
 """
@@ -13,12 +15,13 @@ from .db import STATUS_LABELS, Database, Entry, duration_text, span_text
 from .report import WEEKDAYS, Work, day_tag, group_works, unique_minutes
 
 DAY_MINUTES = 24 * 60
+DEFAULT_WINDOW = (9 * 60, 18 * 60)
 
 
 @dataclass
 class Bar:
-    start: float  # day 模式：分鐘（0~1440）；days 模式：第幾天（0 起算）
-    end: float  # day 模式：分鐘；days 模式：第幾天 + 1
+    start: float  # 橫軸上的位置（分鐘）：day 模式是當天幾點；days 模式是 第幾天 × 時間窗長度 ＋ 時間窗內的分鐘
+    end: float
     status: str
     entry_id: int  # 雙擊跳到這筆
     tooltip: str
@@ -40,17 +43,31 @@ class Gantt:
     start: str
     end: str
     rows: list[Row]
-    axis_start: float  # day 模式：分鐘；days 模式：0
-    axis_end: float  # day 模式：分鐘；days 模式：天數
+    window: tuple[int, int]  # 每天畫出來的時間窗（當天幾點，分鐘）
+    days: list[str]  # 畫出來的每一天，day 模式只有一天
 
     @property
     def single_day(self) -> bool:
         return self.start == self.end
 
     @property
-    def days(self) -> list[str]:
-        first = Date.fromisoformat(self.start)
-        return [(first + timedelta(days=i)).isoformat() for i in range(int(self.axis_end))]
+    def day_length(self) -> int:
+        """時間窗的長度（分鐘）＝橫軸上一天的長度。"""
+        return self.window[1] - self.window[0]
+
+    @property
+    def axis_start(self) -> float:
+        return self.window[0] if self.single_day else 0
+
+    @property
+    def axis_end(self) -> float:
+        return self.window[1] if self.single_day else len(self.days) * self.day_length
+
+    def position(self, day_index: int, minute: int) -> float:
+        """第 day_index 天的 minute（當天幾點）在橫軸上的位置。"""
+        if self.single_day:
+            return minute
+        return day_index * self.day_length + minute - self.window[0]
 
     @property
     def empty(self) -> bool:
@@ -76,6 +93,18 @@ def day_part(entry: Entry, day: str) -> tuple[int, int] | None:
     if hi <= 0 or lo >= DAY_MINUTES:
         return None
     return max(lo, 0), min(hi, DAY_MINUTES)
+
+
+def fit_window(parts) -> tuple[int, int]:
+    """涵蓋所有 (lo, hi) 的時間窗：前後到整點，至少 09:00~18:00。"""
+    parts = list(parts)
+    if not parts:
+        return DEFAULT_WINDOW
+    lo = min(p[0] for p in parts)
+    hi = max(p[1] for p in parts)
+    start = min(lo // 60 * 60, DEFAULT_WINDOW[0])
+    end = min(max(-(-hi // 60) * 60, DEFAULT_WINDOW[1]), DAY_MINUTES)
+    return start, end
 
 
 def entry_tooltip(entry: Entry, with_date: bool = False) -> str:
@@ -115,8 +144,13 @@ def _day_rows(db: Database, entries: list[Entry]) -> list[Row]:
     return rows
 
 
-def _work_rows(db: Database, start: str, days: list[str], works: list[Work]) -> list[Row]:
-    first = Date.fromisoformat(start)
+def _unique_spans(entries: list[Entry]) -> list[Entry]:
+    """起訖相同的只留一筆（最晚那筆：顏色用它的狀態，雙擊跳到它），依時段排列。"""
+    return sorted({e.span_key: e for e in entries}.values(), key=lambda e: e.span_key)
+
+
+def _work_rows(db: Database, gantt: Gantt, works: list[Work]) -> list[Row]:
+    w0, w1 = gantt.window
     rows = []
     for label, items in _grouped(db, works, lambda w: w.head.category_id):
         rows.append(Row(label, group=True))
@@ -124,23 +158,21 @@ def _work_rows(db: Database, start: str, days: list[str], works: list[Work]) -> 
             head = work.head
             named = work.entries[0] if len(work.latest) > 1 else head  # 名稱規則同範圍整理
             name = named.title or named.summary
-            by_day: dict[str, list[Entry]] = {}  # 時段涵蓋的每一天（在範圍內的）
-            for e in work.entries:
-                for day in days:
-                    if day_part(e, day) is not None:
-                        by_day.setdefault(day, []).append(e)
-            bars = []
-            for day, day_entries in sorted(by_day.items()):
-                i = (Date.fromisoformat(day) - first).days
-                last = day_entries[-1]  # 這天最晚的那筆：顏色用它的狀態，雙擊跳到它
-                spans = {e.span_key: day_part(e, day) for e in day_entries}  # 起訖相同的只算一次
-                minutes = sum(hi - lo for lo, hi in spans.values())
-                total = f"（這天共 {duration_text(minutes)}）" if minutes and len(spans) > 1 else ""
-                tip = f"{name}\n{day_tag(day)}{total}\n" + "\n".join(
-                    "　" + entry_tooltip(e, with_date=e.date != day).replace("\n", "　") for e in day_entries)
-                bars.append(Bar(i, i + 1, last.status, last.id, tip))
+            bars, drawn_days = [], set()
+            for e in _unique_spans(work.entries):
+                tip = f"{name}\n" + entry_tooltip(e, with_date=True)
+                for i, day in enumerate(gantt.days):
+                    part = day_part(e, day)
+                    if part is None:
+                        continue
+                    lo, hi = max(part[0], w0), min(part[1], w1)  # 時間窗已經涵蓋所有時段，保險起見再截一次
+                    if lo > hi or (lo == hi and part[0] != part[1]):
+                        continue
+                    drawn_days.add(day)
+                    bars.append(Bar(gantt.position(i, lo), gantt.position(i, hi), e.status, e.id, tip,
+                                    point=lo == hi))
             total = unique_minutes(work.entries)
-            tip = f"{name}\n範圍內 {len(work.entries)} 筆、{len(by_day)} 天" + (
+            tip = f"{name}\n範圍內 {len(work.entries)} 筆、{len(drawn_days)} 天" + (
                 f"，合計 {duration_text(total)}" if total else "")
             rows.append(Row(name, head.id, bars, tooltip=tip))
     return rows
@@ -150,20 +182,14 @@ def build_gantt(db: Database, start: str, end: str) -> Gantt:
     entries = db.entries_between(start, end)
     if start == end:
         rows = _day_rows(db, entries)
-        bars = [b for r in rows for b in r.bars]
-        if bars:  # 前後留到整點，至少 09:00~18:00
-            lo = min(b.start for b in bars)
-            hi = max(b.end for b in bars)
-            axis_start = min(lo // 60 * 60, 9 * 60)
-            axis_end = max(-(-hi // 60) * 60, 18 * 60)
-            if axis_end == axis_start:
-                axis_end += 60
-        else:
-            axis_start, axis_end = 9 * 60, 18 * 60
-        return Gantt(start, end, rows, axis_start, min(axis_end, DAY_MINUTES))
+        window = fit_window((b.start, b.end) for r in rows for b in r.bars)
+        return Gantt(start, end, rows, window, [start])
     n = (Date.fromisoformat(end) - Date.fromisoformat(start)).days + 1
     days = [(Date.fromisoformat(start) + timedelta(days=i)).isoformat() for i in range(n)]
-    return Gantt(start, end, _work_rows(db, start, days, group_works(db, entries)), 0, n)
+    window = fit_window(part for e in entries for day in days if (part := day_part(e, day)) is not None)
+    gantt = Gantt(start, end, [], window, days)
+    gantt.rows = _work_rows(db, gantt, group_works(db, entries))
+    return gantt
 
 
 def weekday(day: str) -> str:
