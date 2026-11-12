@@ -29,7 +29,7 @@ LEGACY_STATUSES = {"blocked": "todo"}  # 舊版的「卡住」改成「待辦」
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
 DEFAULT_PRIORITY = 3
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 CATEGORY_SEP = " › "
 CATEGORY_NAMESPACE = uuid.UUID("7d4f2a3e-5b1c-4e8a-9f60-2c3d4e5f6a7b")
 
@@ -189,6 +189,18 @@ def duration_minutes(start: str, end: str) -> int:
     return (eh * 60 + em) - (sh * 60 + sm)
 
 
+SLOT_MINUTES = 15  # 起訖時間以 15 分鐘為一格
+
+
+def snap_clock(value: str) -> str:
+    """HH:MM 四捨五入到最近的 15 分鐘（09:07→09:00、17:08→17:15）；23:53 這種進位到 24:00 的改成 23:45。空白原樣回傳。"""
+    if not value:
+        return value
+    h, m = map(int, value.split(":"))
+    total = min(round((h * 60 + m) / SLOT_MINUTES) * SLOT_MINUTES, 24 * 60 - SLOT_MINUTES)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
 def parse_clock(text: str) -> str:
     """使用者輸入的時間轉成 HH:MM：接受「9:05」「09:05」「0905」「905」；空白回傳 ""，看不懂就 ValueError。"""
     text = (text or "").strip().replace("：", ":")
@@ -206,14 +218,15 @@ def resolve_times(start_text: str, end_text: str, *, date: str, today: str, now:
     """輸入視窗存檔時決定起訖時間（規則見 docs/v3-roadmap.md）。回傳 ("", "") 表示交給 save_entry 依「前一則」自動補。
 
     不合規則時 ValueError，訊息可以直接顯示給使用者。"""
-    start, end = parse_clock(start_text), parse_clock(end_text)
+    start, end = snap_clock(parse_clock(start_text)), snap_clock(parse_clock(end_text))
+    now = snap_clock(now)
     if not start and not end:
         if editing:
             raise ValueError("起始和結束時間不能清空")
         if date != today:
             raise ValueError("補記別天的事，請填起始和結束時間")
         return (now, now) if follow_up else ("", "")  # 追加進度：時長 0，不沿用前一筆
-    if date == today and end and end > now:  # 今天的紀錄結束時間最晚到現在
+    if date == today and end and end > now:  # 今天的紀錄結束時間最晚到現在（取整後的現在）
         end = now
     check_times(start, end)
     return start, end
@@ -306,7 +319,7 @@ class Database:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
                  4: self._migrate_v4, 5: self._migrate_v5, 6: self._migrate_v6,
-                 7: self._migrate_v7, 8: self._migrate_v8}
+                 7: self._migrate_v7, 8: self._migrate_v8, 9: self._migrate_v9}
         has_entries = self.conn.execute("SELECT 1 FROM entries LIMIT 1").fetchone() is not None
         if version < 6 and has_entries:  # 分類改成樹狀是較大的改動，升級前先留一份備份
             self.conn.commit()
@@ -314,6 +327,9 @@ class Database:
         elif version < 8 and has_entries:  # 起訖時間由舊資料回推，升級前也留一份備份
             self.conn.commit()
             shutil.copy2(self.data_dir / "reporttool.db", self.data_dir / "reporttool-before-v8.db")
+        elif version < 9 and has_entries:  # 起訖時間全部取整到 15 分鐘
+            self.conn.commit()
+            shutil.copy2(self.data_dir / "reporttool.db", self.data_dir / "reporttool-before-v9.db")
         # 重建資料表時要暫時關掉外鍵檢查（不能在交易中切換）
         self.conn.execute("PRAGMA foreign_keys = OFF")
         try:
@@ -408,6 +424,16 @@ class Database:
                 self.conn.execute("UPDATE entries SET start_time=? WHERE id=?", (last_end[r["date"]], r["id"]))
             last_end[r["date"]] = r["time"]
 
+    def _migrate_v9(self):
+        """起訖時間取整到 15 分鐘（3.0.1）。
+
+        不更新 updated_at：每台裝置轉換的結果都相同，匯入時也會取整，不必靠同步覆蓋別台。"""
+        rows = self.conn.execute("SELECT id, start_time, end_time FROM entries WHERE start_time<>''").fetchall()
+        for r in rows:
+            start, end = snap_clock(r["start_time"]), snap_clock(r["end_time"])
+            if (start, end) != (r["start_time"], r["end_time"]):
+                self.conn.execute("UPDATE entries SET start_time=?, end_time=? WHERE id=?", (start, end, r["id"]))
+
     @property
     def device_id(self) -> str:
         return self.conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()[0]
@@ -456,13 +482,18 @@ class Database:
         return row["t"]
 
     def fill_times(self, entry: Entry):
-        """起訖都空白時自動補：結束＝entry.time（建立的時間），起始＝前一則的結束；沒有前一則時長就是 0。"""
+        """起訖都空白時自動補：結束＝entry.time（建立的時間）取整，起始＝前一則的結束；沒有前一則時長就是 0。
+
+        不論自動補或手填，起訖都取整到 15 分鐘。"""
         if not entry.start and not entry.end:
-            entry.end = entry.time
-            entry.start = self.previous_end(entry.date, entry.time, entry.id) or entry.time
+            entry.end = snap_clock(entry.time)
+            entry.start = self.previous_end(entry.date, entry.end, entry.id) or entry.end
+        entry.start, entry.end = snap_clock(entry.start), snap_clock(entry.end)
 
     def save_entry(self, entry: Entry) -> int:
         """新增或更新一筆紀錄（含 tag 與圖片），回傳 id。起訖不合規則時 ValueError，什麼都不寫入。"""
+        if entry.start or entry.end:  # 先檢查格式，取整才不會遇到看不懂的值
+            check_times(entry.start, entry.end)
         self.fill_times(entry)
         check_times(entry.start, entry.end)
         now = utc_now()

@@ -14,8 +14,8 @@ TESTS = Path(__file__).parent
 GOLDEN = TESTS / "golden"
 LEGACY = TESTS / "legacy"
 # 第 1、2 版的標準測試資料匯入後回推出來的起訖：結束＝time，起始＝同一天前一則（不含 tombstone）的結束
-DERIVED = {"1111": ("16:00", "16:00"), "2222": ("09:30", "09:30"), "3333": ("09:30", "10:20"),
-           "4444": ("11:00", "11:00"), "5555": ("10:20", "14:05"), "6666": ("14:05", "16:40")}
+DERIVED = {"1111": ("16:00", "16:00"), "2222": ("09:30", "09:30"), "3333": ("09:30", "10:15"),
+           "4444": ("11:00", "11:00"), "5555": ("10:15", "14:00"), "6666": ("14:00", "16:45")}
 
 
 def times(db):
@@ -120,8 +120,8 @@ def test_new_database_has_no_backup(tmp_path):
 def test_golden_has_times(tmp_path):
     db = Database(tmp_path)
     import_bundle(db, GOLDEN / "basic")
-    assert times(db) == {"1111": ("14:30", "16:00"), "2222": ("09:00", "09:30"), "3333": ("09:30", "10:20"),
-                         "4444": ("11:00", "11:00"), "5555": ("13:30", "14:05"), "6666": ("16:40", "16:40")}
+    assert times(db) == {"1111": ("14:30", "16:00"), "2222": ("09:00", "09:30"), "3333": ("09:30", "10:15"),
+                         "4444": ("11:00", "11:00"), "5555": ("13:30", "14:00"), "6666": ("16:45", "16:45")}
 
 
 @pytest.mark.parametrize("name", ["bundle_v1.json", "bundle_v2.json"])
@@ -142,7 +142,7 @@ def test_legacy_bundle_keeps_local_times(tmp_path):
     for e in v2["entries"]:
         e["updated_at"] = "2030-01-01T00:00:00.000Z"
     merge(db, v2, lambda rel: None)
-    assert times(db)["3333"] == ("09:30", "10:20") and times(db)["5555"] == ("13:30", "14:05")
+    assert times(db)["3333"] == ("09:30", "10:15") and times(db)["5555"] == ("13:30", "14:00")
 
 
 @pytest.mark.parametrize("start, end", [(None, "10:00"), ("10:00", "09:00"), ("", ""), ("10:00", None)])

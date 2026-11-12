@@ -155,18 +155,29 @@ def test_hours_section_rolls_up_subcategories(tmp_path):
     sub = db.add_category("登入頁", proj)
     db.save_entry(Entry(None, "2026-11-02", "12:00", "a", "done", category_id=sub, start="09:00", end="12:00"))
     db.save_entry(Entry(None, "2026-11-02", "12:00", "重疊", "done", category_id=dev, start="11:00", end="12:00"))
-    db.save_entry(Entry(None, "2026-11-03", "09:00", "很短", "done", start="09:00", end="09:01"))
+    db.save_entry(Entry(None, "2026-11-03", "09:00", "很短", "done", start="09:00", end="09:15"))
     db.save_entry(Entry(None, "2026-11-03", "10:00", "時長 0", "done", category_id=db.categories()[1][0],
                         start="10:00", end="10:00"))
     md = (generate_range_report(db, "2026-11-02", "2026-11-08", tmp_path / "out", "x") / "report.md").read_text(
         encoding="utf-8")
     assert (
-        "- 開發：4h（100%）\n"  # 重疊的時段各自計算
-        "- 開發 › 專案A：3h（75%）\n"
-        "- 開發 › 專案A › 登入頁：3h（75%）\n"
-        "- 未分類：0.02h（<1%）\n"  # 時長 0 的「會議」不列
-        "- 合計：4.02h\n"
+        "- 開發：4h（94%）\n"  # 重疊的時段各自計算
+        "- 開發 › 專案A：3h（71%）\n"
+        "- 開發 › 專案A › 登入頁：3h（71%）\n"
+        "- 未分類：0.25h（6%）\n"  # 時長 0 的「會議」不列
+        "- 合計：4.25h\n"
     ) in md
+
+
+def test_hours_share_below_one_percent(tmp_path):
+    """3.0.1 起存檔都會取整到 15 分鐘，<1% 用沒存進資料庫的紀錄直接測。"""
+    from reporttool.report import hours_lines
+
+    db = Database(tmp_path / "data")
+    dev = db.categories()[0][0]
+    entries = [Entry(None, "2026-11-02", "18:00", "a", "done", category_id=dev, start="09:00", end="18:00"),
+               Entry(None, "2026-11-03", "09:01", "很短", "done", start="09:00", end="09:01")]
+    assert hours_lines(db, entries)[-2:] == ["- 未分類：0.02h（<1%）", "- 合計：9.02h"]
 
 
 def test_hours_section_omitted_without_durations(tmp_path):

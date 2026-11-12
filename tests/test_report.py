@@ -43,11 +43,11 @@ def test_generate_report(tmp_path):
 
     md = (folder / "report.md").read_text(encoding="utf-8")
     assert md.startswith(f"# 工作回報整理請求（{DATE}）\n\n## 指示\n- 依紀錄中的 [分類：…]")
-    assert "- [10:20][進行中][優先3][#專案A] 修登入頁 timeout 問題（![附圖1]）" in md
-    assert "- [14:05][完成][優先3][#專案A] timeout 修好，已送 PR（![附圖2]、附圖3：未提供）" in md
+    assert "- [10:15][進行中][優先3][#專案A] 修登入頁 timeout 問題（![附圖1]）" in md
+    assert "- [14:00][完成][優先3][#專案A] timeout 修好，已送 PR（![附圖2]、附圖3：未提供）" in md
     assert md.endswith("\n\n[附圖1]: <01_修登入頁timeout問題.png>\n[附圖2]: <02_timeout修好，已送PR.jpg>\n")
-    # 沒填起訖：起始＝前一則（14:05 那筆）的結束
-    assert "- [14:05–16:00 1.92h][等待中][優先3] 等待 DBA 開權限\n  已經寄信催了" in md
+    # 沒填起訖：起訖取整到 15 分鐘，起始＝前一則（14:05 建立、結束取整成 14:00 那筆）的結束
+    assert "- [14:00–16:00 2h][等待中][優先3] 等待 DBA 開權限\n  已經寄信催了" in md
 
 
 def test_regenerate_removes_old_images_only(tmp_path):

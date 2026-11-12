@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..db import Database
+from ..db import SLOT_MINUTES, Database
 from ..gantt import Bar, Gantt, Row, build_gantt, weekday
 from .entry_dialog import STATUS_COLORS
 from .range_dialog import RangeDialog
@@ -17,8 +17,9 @@ LABEL_W = 280  # 左邊標題欄
 ROW_H = 24
 HEADER_H = 34
 PAD = 12  # 右邊與下方留白
-PX_PER_HOUR = 90
-GRID = QColor("#e3e6ea")
+PX_PER_HOUR = 96  # 15 分鐘一格 24px
+GRID = QColor("#d5d9de")
+MINOR_GRID = QColor("#eef0f3")  # 15 分鐘格線
 GROUP_BG = QColor("#f1f3f5")
 WEEKEND_BG = QColor("#f7f7f9")
 TEXT = QColor("#333333")
@@ -89,6 +90,11 @@ class GanttView(QWidget):
             result.append((i, text, w in "六日"))
         return result
 
+    def minor_ticks(self) -> list[int]:
+        """單日檢視：整點之間每 15 分鐘的位置（分鐘）。"""
+        g = self.gantt
+        return [m for m in range(int(g.axis_start), int(g.axis_end), SLOT_MINUTES) if m % 60]
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -105,6 +111,11 @@ class GanttView(QWidget):
         for i, row in enumerate(g.rows):
             if row.group:
                 p.fillRect(self.row_rect(i), GROUP_BG)
+        if g.single_day:  # 每 15 分鐘一條淡格線，整點的用下面的深色
+            p.setPen(QPen(MINOR_GRID, 1))
+            for m in self.minor_ticks():
+                x = self.x_of(m)
+                p.drawLine(QPointF(x, HEADER_H), QPointF(x, chart_bottom))
         p.setPen(QPen(GRID, 1))
         for value, _text, _weekend in self.ticks():
             x = self.x_of(value)

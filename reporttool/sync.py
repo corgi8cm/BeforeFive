@@ -20,7 +20,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .db import (
-    DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, category_uuid, check_times,
+    DEFAULT_PRIORITY, LEGACY_STATUSES, LIVE, PRIORITIES, STATUSES, Database, category_uuid, check_times, snap_clock,
     convert_first_tags, utc_now,
 )
 
@@ -304,6 +304,8 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
             e = {**e, "start_time": e["time"], "end_time": e["time"]}
             if not e["deleted_at"]:
                 derive.append(e["uuid"])
+    # 舊版或別台還沒升級的裝置可能有不是 15 分鐘整格的時間，匯入時一樣取整
+    e = {**e, "start_time": snap_clock(e["start_time"]), "end_time": snap_clock(e["end_time"])}
     if row and not _incoming_wins(_entry_record(db, row), e):
         return None
 
@@ -375,7 +377,8 @@ def _derive_start_times(db: Database, uuids: list[str]):
     for entry_uuid in uuids:
         row = db.conn.execute(f"SELECT id, date, time FROM entries WHERE uuid=? AND {LIVE}", (entry_uuid,)).fetchone()
         if row:
-            start = db.previous_end(row["date"], row["time"], row["id"]) or row["time"]
+            end = snap_clock(row["time"])
+            start = db.previous_end(row["date"], end, row["id"]) or end
             db.conn.execute("UPDATE entries SET start_time=? WHERE id=?", (start, row["id"]))
 
 

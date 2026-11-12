@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import (
-    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_tags, resolve_times, span_text,
+    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_clock, parse_tags, resolve_times,
+    snap_clock, span_text,
 )
 from .category_picker import CategoryPicker
 
@@ -34,10 +35,20 @@ def time_field(placeholder: str, tip: str) -> QLineEdit:
     edit.setMaxLength(5)
     edit.setFixedWidth(64)
     edit.setAlignment(Qt.AlignCenter)
+
+    def snap():  # 打完就顯示取整到 15 分鐘的結果；看不懂的留著，存檔時再提醒
+        try:
+            value = snap_clock(parse_clock(edit.text()))
+        except ValueError:
+            return
+        if value != edit.text():
+            edit.setText(value)
+
+    edit.editingFinished.connect(snap)
     return edit
 
 
-TIME_TIP = ("這件事的起訖時間（HH:MM，也可以打 0930）。\n"
+TIME_TIP = ("這件事的起訖時間（HH:MM，也可以打 0930），以 15 分鐘為一格，會四捨五入（09:07→09:00）。\n"
             "今天的新紀錄兩個都不填：起始＝今天前一筆的結束，結束＝存檔當下。\n"
             "補記別天的事、編輯舊紀錄時兩個都要填；結束時間最晚到現在。")
 
