@@ -147,6 +147,11 @@ class GanttView(QWidget):
             label_rect = QRectF(indent, rect.top(), LABEL_W - indent - 6, ROW_H)
             text = QFontMetrics(p.font()).elidedText(row.label, Qt.ElideRight, int(label_rect.width()))
             p.drawText(label_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+            if row.note and not row.bars:  # 時段不在這天：寫出時段
+                p.setFont(small)
+                p.setPen(MUTED)
+                p.drawText(QRectF(LABEL_W + 8, rect.top(), self.width() - LABEL_W - 8 - PAD, ROW_H),
+                           Qt.AlignVCenter | Qt.AlignLeft, row.note)
             for bar in row.bars:
                 color = QColor(STATUS_COLORS.get(bar.status, "#888888"))
                 r = self.bar_rect(i, bar)

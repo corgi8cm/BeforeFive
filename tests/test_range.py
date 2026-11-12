@@ -175,8 +175,8 @@ def test_hours_share_below_one_percent(tmp_path):
 
     db = Database(tmp_path / "data")
     dev = db.categories()[0][0]
-    entries = [Entry(None, "2026-11-02", "18:00", "a", "done", category_id=dev, start="09:00", end="18:00"),
-               Entry(None, "2026-11-03", "09:01", "很短", "done", start="09:00", end="09:01")]
+    entries = [Entry(1, "2026-11-02", "18:00", "a", "done", category_id=dev, start="09:00", end="18:00"),
+               Entry(2, "2026-11-03", "09:01", "很短", "done", start="09:00", end="09:01")]
     assert hours_lines(db, entries)[-2:] == ["- 未分類：0.02h（<1%）", "- 合計：9.02h"]
 
 

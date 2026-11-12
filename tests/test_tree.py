@@ -200,7 +200,8 @@ def test_legacy_v1_bundle_matches_golden(tmp_path):
     v1_section = "\n## 分類資訊\n- 開發\n- 開發 › 專案A\n- 會議\n- 支援\n- 支援 › 客戶X\n"
     assert md == expected[:start] + v1_section + expected[end:]
     v2 = json.loads((LEGACY / "bundle_v2.json").read_text(encoding="utf-8"))
-    without_times = [{k: v for k, v in e.items() if k not in ("start_time", "end_time")}
+    span = ("start_date", "start_time", "end_date", "end_time")
+    without_times = [{k: v for k, v in e.items() if k not in span}
                      for e in snapshot(db)["entries"]]
     assert without_times == v2["entries"]
 

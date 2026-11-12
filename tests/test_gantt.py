@@ -66,7 +66,7 @@ def test_multi_day_rows_merge_chain(db):
     assert labels(g) == ["# 開發", "加班", "# 開發 › 專案A", "登入 timeout", "# 會議", "週會", "# 未分類", "整理文件"]
     chain = g.rows[3]
     assert [(b.start, b.end, b.status) for b in chain.bars] == [(1, 2, "doing"), (2, 3, "done")]  # 同一天用最晚那筆
-    assert "（共 3 小時）" in chain.bars[1].tooltip and "改設定檔" in chain.bars[1].tooltip
+    assert "（這天共 3 小時）" in chain.bars[1].tooltip and "改設定檔" in chain.bars[1].tooltip
     assert "範圍內 3 筆、2 天，合計 5 小時" in chain.tooltip
 
 

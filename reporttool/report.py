@@ -43,9 +43,9 @@ def continued_since(db: Database, entry: Entry) -> str | None:
 
 
 def report_span(entry: Entry) -> str:
-    """「09:00–10:30 1.5h」；時長 0 只寫一個時間。"""
+    """「09:00–10:30 1.5h」；時長 0 只寫一個時間。時段不在紀錄那天時加上日期（「11-10 09:00–11-12 18:00 57h」）。"""
     if entry.minutes == 0:
-        return entry.start or entry.time
+        return span_text(entry, duration=False)
     return f"{span_text(entry, duration=False)} {hours_text(entry.minutes)}"
 
 
@@ -113,7 +113,8 @@ def hours_lines(db: Database, entries: list[Entry]) -> list[str]:
 
     時數是 0 的分類不列；全部都是 0 時回傳空清單（整段省略）。"""
     nodes = db.category_tree()
-    totals, uncategorized, total = roll_up(entries, {n.id: n.parent_id for n in nodes}, lambda e: e.minutes)
+    minutes = db.counted_minutes(entries)  # 同一件工作起訖相同的（帶入的）只算一次
+    totals, uncategorized, total = roll_up(entries, {n.id: n.parent_id for n in nodes}, lambda e: minutes[e.id])
     if not total:
         return []
 
@@ -239,7 +240,7 @@ def day_tag(date: str) -> str:
 
 
 def _order(entry: Entry) -> tuple:
-    return entry.date, entry.start, entry.time, entry.id
+    return entry.date, entry.start_date or entry.date, entry.start, entry.time, entry.id
 
 
 @dataclass
@@ -255,7 +256,13 @@ class Work:
 
     @property
     def minutes(self) -> int:
-        return sum(e.minutes for e in self.entries)
+        """合計時長：起訖相同的紀錄（帶入未完成項目產生的）只算一次。"""
+        return unique_minutes(self.entries)
+
+
+def unique_minutes(entries: list[Entry]) -> int:
+    """同一件工作的幾筆紀錄的合計時長，起訖完全相同的只算一次。"""
+    return sum({e.span_key: e.minutes for e in entries}.values())
 
 
 def group_works(db: Database, entries: list[Entry]) -> list[Work]:

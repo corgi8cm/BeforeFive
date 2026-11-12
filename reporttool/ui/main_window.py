@@ -407,7 +407,8 @@ class MainWindow(QMainWindow):
         """每個分類（含子分類）在這一天的紀錄數與時數。"""
         parents = {n.id: n.parent_id for n in self._nodes}
         counts, none_count, all_count = roll_up(entries, parents)
-        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: e.minutes)
+        counted = self.db.counted_minutes(entries)  # 同一件工作起訖相同的只算一次
+        minutes, none_minutes, all_minutes = roll_up(entries, parents, lambda e: counted[e.id])
         counts.update({ALL: all_count, UNCATEGORIZED: none_count})
         minutes.update({ALL: all_minutes, UNCATEGORIZED: none_minutes})
         it = QTreeWidgetItemIterator(self.sidebar)

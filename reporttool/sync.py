@@ -11,8 +11,9 @@ bundle 是一個 zip（或同樣結構的資料夾）：
     1  分類只有一層，以名稱辨識；紀錄的 category 是分類名稱
     2  分類是樹狀（uuid、parent、progress、priority）；紀錄的 category 是分類 uuid
     3  紀錄有起訖時間 start_time、end_time
+    4  紀錄的時段有起訖日期 start_date、end_date（可以跨日，也可以和紀錄不同天）
 匯入第 1 版時會做和資料庫升級相同的轉換（第一個 tag 變成子分類）；
-匯入第 1、2 版時，起訖時間和資料庫升級一樣由 time 回推。
+匯入第 1、2 版時，起訖時間和資料庫升級一樣由 time 回推；第 1~3 版的起訖日期都是紀錄的日期。
 """
 import json
 import re
@@ -25,8 +26,8 @@ from .db import (
 )
 
 FORMAT = "reporttool-bundle"
-FORMAT_VERSION = 3
-SUPPORTED_VERSIONS = (1, 2, 3)
+FORMAT_VERSION = 4
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 
 _TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -51,7 +52,9 @@ def _entry_record(db: Database, row) -> dict:
         "uuid": row["uuid"],
         "date": row["date"],
         "time": row["time"],
+        "start_date": row["start_date"],
         "start_time": row["start_time"],
+        "end_date": row["end_date"],
         "end_time": row["end_time"],
         "title": row["title"],
         "text": row["text"],
@@ -140,7 +143,9 @@ def validate(data: dict):
         _require(_CLOCK.match(e.get("time") or ""), f"紀錄 {name} 的時間格式錯誤")
         if data["version"] >= 3:
             try:
-                check_times(e.get("start_time"), e.get("end_time"))
+                if data["version"] >= 4:
+                    _require(e["start_date"] and e["end_date"], "")
+                check_times(e.get("start_time"), e.get("end_time"), e.get("start_date", ""), e.get("end_date", ""))
                 _require(e["start_time"], "")
             except (ValueError, TypeError, KeyError):
                 raise BundleError(f"紀錄 {name} 的起訖時間不正確") from None
@@ -304,18 +309,19 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
             e = {**e, "start_time": e["time"], "end_time": e["time"]}
             if not e["deleted_at"]:
                 derive.append(e["uuid"])
-    # 舊版或別台還沒升級的裝置可能有不是 15 分鐘整格的時間，匯入時一樣取整
-    e = {**e, "start_time": snap_clock(e["start_time"]), "end_time": snap_clock(e["end_time"])}
+    # 舊版或別台還沒升級的裝置可能有不是 15 分鐘整格的時間，匯入時一樣取整；第 1~3 版的時段都在紀錄那天
+    e = {**e, "start_time": snap_clock(e["start_time"]), "end_time": snap_clock(e["end_time"]),
+         "start_date": e.get("start_date") or e["date"], "end_date": e.get("end_date") or e["date"]}
     if row and not _incoming_wins(_entry_record(db, row), e):
         return None
 
     if e["deleted_at"]:
         if row is None:
             db.conn.execute(
-                "INSERT INTO entries (uuid, date, time, start_time, end_time, text, status, created_at, updated_at,"
-                " deleted_at) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
-                (e["uuid"], e["date"], e["time"], e["start_time"], e["end_time"], e["status"], e["created_at"],
-                 e["updated_at"], e["deleted_at"]))
+                "INSERT INTO entries (uuid, date, time, start_date, start_time, end_date, end_time, text, status,"
+                " created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)",
+                (e["uuid"], e["date"], e["time"], e["start_date"], e["start_time"], e["end_date"], e["end_time"],
+                 e["status"], e["created_at"], e["updated_at"], e["deleted_at"]))
         else:
             removed_files += db._tombstone(row["id"], e["updated_at"])
             stats["deleted"] += 1
@@ -324,19 +330,20 @@ def _merge_entry(db: Database, e: dict, read_image, stats: dict, removed_files: 
     category_id = resolve_category(e.get("category"), e["updated_at"])
     if row is None:
         entry_id = db.conn.execute(
-            "INSERT INTO entries (uuid, date, time, start_time, end_time, title, text, status, priority, category_id,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (e["uuid"], e["date"], e["time"], e["start_time"], e["end_time"], e["title"], e["text"], e["status"],
-             e["priority"], category_id, e["created_at"], e["updated_at"])).lastrowid
+            "INSERT INTO entries (uuid, date, time, start_date, start_time, end_date, end_time, title, text, status,"
+            " priority, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (e["uuid"], e["date"], e["time"], e["start_date"], e["start_time"], e["end_date"], e["end_time"],
+             e["title"], e["text"], e["status"], e["priority"], category_id, e["created_at"],
+             e["updated_at"])).lastrowid
         old_tags, old_images = set(), {}
         stats["added"] += 1
     else:
         entry_id = row["id"]
         db.conn.execute(
-            "UPDATE entries SET date=?, time=?, start_time=?, end_time=?, title=?, text=?, status=?, priority=?,"
-            " category_id=?, updated_at=?, deleted_at=NULL WHERE id=?",
-            (e["date"], e["time"], e["start_time"], e["end_time"], e["title"], e["text"], e["status"],
-             e["priority"], category_id, e["updated_at"], entry_id))
+            "UPDATE entries SET date=?, time=?, start_date=?, start_time=?, end_date=?, end_time=?, title=?, text=?,"
+            " status=?, priority=?, category_id=?, updated_at=?, deleted_at=NULL WHERE id=?",
+            (e["date"], e["time"], e["start_date"], e["start_time"], e["end_date"], e["end_time"], e["title"],
+             e["text"], e["status"], e["priority"], category_id, e["updated_at"], entry_id))
         old_tags = {r["tag"] for r in db.conn.execute("SELECT tag FROM entry_tags WHERE entry_id=?", (entry_id,))}
         old_images = {r["path"]: r["id"] for r in db.conn.execute(
             "SELECT id, path FROM images WHERE entry_id=?", (entry_id,))}

@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..db import (
-    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_clock, parse_tags, resolve_times,
-    snap_clock, span_text,
+    DEFAULT_PRIORITY, PRIORITIES, STATUS_LABELS, STATUSES, Database, Entry, Image, parse_clock, parse_day, parse_tags,
+    resolve_span, short_day, snap_clock, span_text,
 )
 from .category_picker import CategoryPicker
 
@@ -45,6 +45,29 @@ def time_field(placeholder: str, tip: str) -> QLineEdit:
             edit.setText(value)
 
     edit.editingFinished.connect(snap)
+    return edit
+
+
+def date_field(placeholder: str, ref: str) -> QLineEdit:
+    """時段的日期：空白＝紀錄那天（ref）。打完就整理成「MM-DD」（不同年寫完整日期）。"""
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    edit.setToolTip("這段時間是哪一天（MM-DD 或 YYYY-MM-DD，也可以打 1110）。\n"
+                    "空白＝紀錄這一天；跨午夜、跨好幾天的工作把結束日期設成後來那天。")
+    edit.setMaxLength(10)
+    edit.setFixedWidth(92)
+    edit.setAlignment(Qt.AlignCenter)
+
+    def tidy():  # 看不懂的留著，存檔時再提醒
+        try:
+            value = parse_day(edit.text(), ref)
+        except ValueError:
+            return
+        shown = short_day(value, ref) if value else ""
+        if shown != edit.text():
+            edit.setText(shown)
+
+    edit.editingFinished.connect(tidy)
     return edit
 
 
@@ -271,12 +294,23 @@ class EntryDialog(QDialog):
         self.priority_box.setFixedWidth(100)
         self.priority_box.setToolTip("執行優先順序，主視窗同一組內優先的排前面")
         status_row.addWidget(self.priority_box)
-        status_row.addWidget(QLabel("時段"))
+
+        # 時段：日期空白＝紀錄這一天
+        self.start_date_edit = date_field("起始日期", self.entry_date)
         self.start_edit = time_field("起始", TIME_TIP)
+        self.end_date_edit = date_field("結束日期", self.entry_date)
         self.end_edit = time_field("結束", TIME_TIP)
-        status_row.addWidget(self.start_edit)
-        status_row.addWidget(QLabel("–"))
-        status_row.addWidget(self.end_edit)
+        span_row = QHBoxLayout()
+        span_row.addWidget(QLabel("時段"))
+        span_row.addWidget(self.start_date_edit)
+        span_row.addWidget(self.start_edit)
+        span_row.addWidget(QLabel("–"))
+        span_row.addWidget(self.end_date_edit)
+        span_row.addWidget(self.end_edit)
+        hint = QLabel(f"日期空白＝這一天（{self.entry_date[5:]}）")
+        hint.setStyleSheet("color:#888;")
+        span_row.addWidget(hint)
+        span_row.addStretch()
 
         # 分類 + tags
         self.category_picker = CategoryPicker(db)
@@ -321,6 +355,7 @@ class EntryDialog(QDialog):
         self.text.setMinimumHeight(120)
         layout.addWidget(self.text, 1)
         layout.addLayout(status_row)
+        layout.addLayout(span_row)
         layout.addLayout(tag_row)
         layout.addLayout(chips)
         layout.addWidget(self.strip)
@@ -374,8 +409,11 @@ class EntryDialog(QDialog):
         for btn in self.status_group.buttons():
             btn.setChecked(btn.property("status") == entry.status)
         self._set_category(entry.category_id)
-        self.start_edit.setText(entry.start)
-        self.end_edit.setText(entry.end)
+        start_date, start, end_date, end = entry.span_key
+        self.start_date_edit.setText("" if start_date == entry.date else short_day(start_date, entry.date))
+        self.start_edit.setText(start)
+        self.end_date_edit.setText("" if end_date == entry.date else short_day(end_date, entry.date))
+        self.end_edit.setText(end)
         self.title_edit.setText(entry.title)
         self._set_priority(entry.priority)
         self.text.setPlainText(entry.text)
@@ -418,9 +456,10 @@ class EntryDialog(QDialog):
             return
         today, now = now_parts()
         try:
-            start, end = resolve_times(self.start_edit.text(), self.end_edit.text(), date=self.entry_date,
-                                       today=today, now=now, editing=self.entry is not None,
-                                       follow_up=self.follow_up_of is not None)
+            span = resolve_span(self.start_edit.text(), self.end_edit.text(), date=self.entry_date,
+                                today=today, now=now, editing=self.entry is not None,
+                                follow_up=self.follow_up_of is not None, start_date_text=self.start_date_edit.text(),
+                                end_date_text=self.end_date_edit.text())
         except ValueError as e:
             QMessageBox.warning(self, "時段不正確", str(e))
             self.start_edit.setFocus()
@@ -443,7 +482,7 @@ class EntryDialog(QDialog):
         entry.category_id = self.category_picker.category_id()
         if self.entry is None:
             entry.time = now  # 建立時間，只用來排序；起訖都空白時由 save_entry 依「前一則」自動補
-        entry.start, entry.end = start, end
+        entry.start_date, entry.start, entry.end_date, entry.end = span
         entry.title = title
         entry.text = text
         entry.status = self.status_group.checkedButton().property("status")

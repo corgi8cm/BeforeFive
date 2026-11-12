@@ -14,7 +14,7 @@ import shutil
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date as date_cls, datetime, timezone
 from pathlib import Path
 
 # 依工作流程排列：輸入視窗的按鈕、Alt+1~6、右鍵選單、狀態列都用這個順序
@@ -29,7 +29,7 @@ LEGACY_STATUSES = {"blocked": "todo"}  # 舊版的「卡住」改成「待辦」
 DEFAULT_CATEGORIES = ("開發", "會議", "支援", "行政", "其他")
 PRIORITIES = (1, 2, 3, 4, 5)  # 1 最優先
 DEFAULT_PRIORITY = 3
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 CATEGORY_SEP = " › "
 CATEGORY_NAMESPACE = uuid.UUID("7d4f2a3e-5b1c-4e8a-9f60-2c3d4e5f6a7b")
 
@@ -137,12 +137,19 @@ class Entry:
     title: str = ""  # 可省略
     priority: int = DEFAULT_PRIORITY
     start: str = ""  # 起始時間 HH:MM；新增時起訖都空白就由 save_entry 依規則自動補
-    end: str = ""  # 結束時間 HH:MM，和起始同一天、不早於起始
+    end: str = ""  # 結束時間 HH:MM；（結束日期, 結束時間）不早於（起始日期, 起始時間）
+    start_date: str = ""  # 起始日期 YYYY-MM-DD；空白＝紀錄的日期 date（存檔時補上）
+    end_date: str = ""  # 結束日期，同上；時段可以跨好幾天，也可以和紀錄不同天
+
+    @property
+    def span_key(self) -> tuple[str, str, str, str]:
+        """（起始日期, 起始時間, 結束日期, 結束時間），日期空白時用紀錄的日期。"""
+        return self.start_date or self.date, self.start, self.end_date or self.date, self.end
 
     @property
     def minutes(self) -> int:
-        """時長（分鐘）；起訖還沒填時是 0。"""
-        return duration_minutes(self.start, self.end) if self.start and self.end else 0
+        """時長（分鐘），跨日時是實際經過的時間；起訖還沒填時是 0。"""
+        return span_minutes(*self.span_key) if self.start and self.end else 0
 
     @property
     def summary(self) -> str:
@@ -172,9 +179,18 @@ def roll_up(entries: list[Entry], parents: dict, value=lambda e: 1) -> tuple[dic
     return totals, uncategorized, total
 
 
+def counted_minutes(entries: list[Entry], root_of) -> dict[int, int]:
+    """工時統計用的每筆時長：同一件工作（root_of(id) 相同的延續鏈）起訖完全相同的紀錄只算一次，算在最後一筆。
+
+    帶入未完成項目會沿用原本的時段，不這樣做的話帶入幾天工時就變成幾倍。entries 要依時間排好。"""
+    last = {(root_of(e.id), e.span_key): e.id for e in entries}
+    keep = set(last.values())
+    return {e.id: e.minutes if e.id in keep else 0 for e in entries}
+
+
 def same_level_key(entry: Entry) -> tuple:
     """同一層的紀錄：優先順序高（數字小）的在前，相同時依標題（沒有標題用內容第一行），再依起始時間。"""
-    return entry.priority, entry.summary, entry.start, entry.time
+    return entry.priority, entry.summary, entry.start_date or entry.date, entry.start, entry.time
 
 
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -187,6 +203,41 @@ def is_clock(value) -> bool:
 def duration_minutes(start: str, end: str) -> int:
     (sh, sm), (eh, em) = (map(int, start.split(":")), map(int, end.split(":")))
     return (eh * 60 + em) - (sh * 60 + sm)
+
+
+def span_minutes(start_date: str, start: str, end_date: str, end: str) -> int:
+    days = (date_cls.fromisoformat(end_date) - date_cls.fromisoformat(start_date)).days
+    return days * 24 * 60 + duration_minutes(start, end)
+
+
+def is_date(value) -> bool:
+    if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+        return False
+    try:
+        date_cls.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def parse_day(text: str, ref: str) -> str:
+    """使用者輸入的日期轉成 YYYY-MM-DD：接受「2026-11-10」「2026/11/10」「11-10」「11/10」「1110」；
+    沒寫年份時用 ref（紀錄的日期）的年份。空白回傳 ""，看不懂就 ValueError。"""
+    text = (text or "").strip().replace("／", "/").replace("－", "-")
+    if not text:
+        return ""
+    m = (re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", text) or re.fullmatch(r"(\d{4})(\d{2})(\d{2})", text))
+    if m:
+        y, mo, d = m.groups()
+    else:
+        m = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})", text) or re.fullmatch(r"(\d{2})(\d{2})", text)
+        if not m:
+            raise ValueError(f"看不懂的日期：{text}（請用 MM-DD 或 YYYY-MM-DD，例如 11-10）")
+        y, (mo, d) = ref[:4], m.groups()
+    value = f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    if not is_date(value):
+        raise ValueError(f"沒有這一天：{text}")
+    return value
 
 
 SLOT_MINUTES = 15  # 起訖時間以 15 分鐘為一格
@@ -213,23 +264,28 @@ def parse_clock(text: str) -> str:
     return value
 
 
-def resolve_times(start_text: str, end_text: str, *, date: str, today: str, now: str, editing: bool,
-                  follow_up: bool) -> tuple[str, str]:
-    """輸入視窗存檔時決定起訖時間（規則見 docs/v3-roadmap.md）。回傳 ("", "") 表示交給 save_entry 依「前一則」自動補。
+def resolve_span(start_text: str, end_text: str, *, date: str, today: str, now: str, editing: bool,
+                 follow_up: bool, start_date_text: str = "", end_date_text: str = "") -> tuple[str, str, str, str]:
+    """輸入視窗存檔時決定（起始日期, 起始時間, 結束日期, 結束時間）（規則見 docs/v3-roadmap.md）。
+    日期空白＝紀錄的日期。回傳四個空字串表示交給 save_entry 依「前一則」自動補。
 
     不合規則時 ValueError，訊息可以直接顯示給使用者。"""
     start, end = snap_clock(parse_clock(start_text)), snap_clock(parse_clock(end_text))
+    start_date, end_date = parse_day(start_date_text, date), parse_day(end_date_text, date)
     now = snap_clock(now)
     if not start and not end:
+        if start_date or end_date:
+            raise ValueError("填了日期也要填起始和結束時間")
         if editing:
             raise ValueError("起始和結束時間不能清空")
         if date != today:
             raise ValueError("補記別天的事，請填起始和結束時間")
-        return (now, now) if follow_up else ("", "")  # 追加進度：時長 0，不沿用前一筆
-    if date == today and end and end > now:  # 今天的紀錄結束時間最晚到現在（取整後的現在）
-        end = now
-    check_times(start, end)
-    return start, end
+        return (date, now, date, now) if follow_up else ("", "", "", "")  # 追加進度：時長 0，不沿用前一筆
+    start_date, end_date = start_date or date, end_date or date
+    if date == today and end and (end_date, end) > (today, now):  # 今天的紀錄結束最晚到現在（取整後的現在）
+        end_date, end = today, now
+    check_times(start, end, start_date, end_date)
+    return start_date, start, end_date, end
 
 
 def duration_text(minutes: int) -> str:
@@ -245,22 +301,36 @@ def hours_text(minutes: int) -> str:
     return f"{minutes / 60:.2f}".rstrip("0").rstrip(".") + "h"
 
 
+def short_day(day: str, ref: str) -> str:
+    """和 ref 同一年只寫「MM-DD」，否則寫完整日期。"""
+    return day[5:] if day[:4] == ref[:4] else day
+
+
 def span_text(entry: "Entry", duration: bool = True) -> str:
-    """「09:00–10:30（1 小時 30 分）」；時長 0 只寫一個時間。"""
-    if not entry.start or entry.start == entry.end:
-        return entry.start or entry.time
-    text = f"{entry.start}–{entry.end}"
-    return text + f"（{duration_text(entry.minutes)}）" if duration else text
+    """「09:00–10:30（1 小時 30 分）」；時長 0 只寫一個時間。
+    時段不在紀錄那天時加上日期：「11-10 09:00–18:00」「11-10 09:00–11-12 18:00（57 小時）」。"""
+    if not entry.start:
+        return entry.time
+    start_date, start, end_date, end = entry.span_key
+    if start_date == end_date == entry.date:
+        text = start if start == end else f"{start}–{end}"
+    else:
+        text = f"{short_day(start_date, entry.date)} {start}"
+        if (start_date, start) != (end_date, end):
+            text += "–" + (end if end_date == start_date else f"{short_day(end_date, entry.date)} {end}")
+    return text + f"（{duration_text(entry.minutes)}）" if duration and entry.minutes else text
 
 
-def check_times(start: str, end: str):
-    """起訖時間的規則；不符合時 ValueError（訊息可以直接顯示給使用者）。"""
+def check_times(start: str, end: str, start_date: str = "", end_date: str = ""):
+    """起訖的規則；不符合時 ValueError（訊息可以直接顯示給使用者）。日期都省略時當作同一天。"""
     if bool(start) != bool(end):
         raise ValueError("起始和結束時間要一起填")
     if not (is_clock(start) and is_clock(end)):
         raise ValueError("時間格式要是 HH:MM")
-    if end < start:
-        raise ValueError("結束時間不能早於起始時間（跨午夜的工作請拆成兩筆）")
+    if bool(start_date) != bool(end_date) or (start_date and not (is_date(start_date) and is_date(end_date))):
+        raise ValueError("日期格式要是 YYYY-MM-DD")
+    if (start_date, start) > (end_date, end):
+        raise ValueError("結束不能早於起始（跨午夜的工作請把結束日期設成隔天）")
 
 
 def normalize_tag(tag: str) -> str:
@@ -319,7 +389,8 @@ class Database:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
         steps = {1: self._migrate_v1, 2: self._migrate_v2, 3: self._migrate_v3,
                  4: self._migrate_v4, 5: self._migrate_v5, 6: self._migrate_v6,
-                 7: self._migrate_v7, 8: self._migrate_v8, 9: self._migrate_v9}
+                 7: self._migrate_v7, 8: self._migrate_v8, 9: self._migrate_v9,
+                 10: self._migrate_v10}
         has_entries = self.conn.execute("SELECT 1 FROM entries LIMIT 1").fetchone() is not None
         if version < 6 and has_entries:  # 分類改成樹狀是較大的改動，升級前先留一份備份
             self.conn.commit()
@@ -434,6 +505,14 @@ class Database:
             if (start, end) != (r["start_time"], r["end_time"]):
                 self.conn.execute("UPDATE entries SET start_time=?, end_time=? WHERE id=?", (start, end, r["id"]))
 
+    def _migrate_v10(self):
+        """時段的起訖日期：舊紀錄的時段都在紀錄那天。不更新 updated_at。"""
+        if "start_date" in self._columns("entries"):
+            return
+        self.conn.execute("ALTER TABLE entries ADD COLUMN start_date TEXT NOT NULL DEFAULT ''")
+        self.conn.execute("ALTER TABLE entries ADD COLUMN end_date TEXT NOT NULL DEFAULT ''")
+        self.conn.execute("UPDATE entries SET start_date=date, end_date=date")
+
     @property
     def device_id(self) -> str:
         return self.conn.execute("SELECT value FROM meta WHERE key='device_id'").fetchone()[0]
@@ -475,10 +554,10 @@ class Database:
         )
 
     def previous_end(self, date: str, before: str, exclude_id: int | None = None) -> str | None:
-        """「前一則」的結束時間：同一天、還沒刪除的紀錄中，不晚於 before 的最晚結束時間。"""
+        """「前一則」的結束時間：同一天、還沒刪除、時段也在這天結束的紀錄中，不晚於 before 的最晚結束時間。"""
         row = self.conn.execute(
-            f"SELECT MAX(end_time) AS t FROM entries WHERE date=? AND end_time<=? AND id IS NOT ? AND {LIVE}",
-            (date, before, exclude_id)).fetchone()
+            f"SELECT MAX(end_time) AS t FROM entries WHERE date=? AND end_date=? AND end_time<=? AND id IS NOT ?"
+            f" AND {LIVE}", (date, date, before, exclude_id)).fetchone()
         return row["t"]
 
     def fill_times(self, entry: Entry):
@@ -488,33 +567,37 @@ class Database:
         if not entry.start and not entry.end:
             entry.end = snap_clock(entry.time)
             entry.start = self.previous_end(entry.date, entry.end, entry.id) or entry.end
+            entry.start_date = entry.end_date = entry.date
         entry.start, entry.end = snap_clock(entry.start), snap_clock(entry.end)
+        entry.start_date, entry.end_date = entry.start_date or entry.date, entry.end_date or entry.date
 
     def save_entry(self, entry: Entry) -> int:
         """新增或更新一筆紀錄（含 tag 與圖片），回傳 id。起訖不合規則時 ValueError，什麼都不寫入。"""
         if entry.start or entry.end:  # 先檢查格式，取整才不會遇到看不懂的值
-            check_times(entry.start, entry.end)
+            check_times(entry.start, entry.end, entry.start_date or entry.date, entry.end_date or entry.date)
         self.fill_times(entry)
-        check_times(entry.start, entry.end)
+        check_times(entry.start, entry.end, entry.start_date, entry.end_date)
         now = utc_now()
         removed_files = []
         with self.conn:
             if entry.id is None:
                 entry.uuid = entry.uuid or new_uuid()
                 cur = self.conn.execute(
-                    "INSERT INTO entries (uuid, date, time, start_time, end_time, title, text, status, priority,"
-                    " carried_from, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (entry.uuid, entry.date, entry.time, entry.start, entry.end, entry.title, entry.text, entry.status,
-                     entry.priority, entry.carried_from, entry.category_id, now, now),
+                    "INSERT INTO entries (uuid, date, time, start_date, start_time, end_date, end_time, title, text,"
+                    " status, priority, carried_from, category_id, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entry.uuid, entry.date, entry.time, entry.start_date, entry.start, entry.end_date, entry.end,
+                     entry.title, entry.text, entry.status, entry.priority, entry.carried_from, entry.category_id,
+                     now, now),
                 )
                 entry.id = cur.lastrowid
                 old_tags = set()
             else:
                 self.conn.execute(
-                    "UPDATE entries SET date=?, time=?, start_time=?, end_time=?, title=?, text=?, status=?,"
-                    " priority=?, category_id=?, updated_at=? WHERE id=?",
-                    (entry.date, entry.time, entry.start, entry.end, entry.title, entry.text, entry.status,
-                     entry.priority, entry.category_id, now, entry.id),
+                    "UPDATE entries SET date=?, time=?, start_date=?, start_time=?, end_date=?, end_time=?, title=?,"
+                    " text=?, status=?, priority=?, category_id=?, updated_at=? WHERE id=?",
+                    (entry.date, entry.time, entry.start_date, entry.start, entry.end_date, entry.end, entry.title,
+                     entry.text, entry.status, entry.priority, entry.category_id, now, entry.id),
                 )
                 old_tags = {r["tag"] for r in self.conn.execute(
                     "SELECT tag FROM entry_tags WHERE entry_id=?", (entry.id,))}
@@ -566,7 +649,7 @@ class Database:
             "SELECT * FROM images WHERE entry_id=? ORDER BY position", (row["id"],))]
         return Entry(row["id"], row["date"], row["time"], row["text"], row["status"], tags, images,
                      row["carried_from"], row["category_id"], self.category_label(row["category_id"]), row["uuid"],
-                     row["title"], row["priority"], row["start_time"], row["end_time"])
+                     row["title"], row["priority"], row["start_time"], row["end_time"], row["start_date"], row["end_date"])
 
     def get_entry(self, entry_id: int) -> Entry | None:
         row = self.conn.execute(f"SELECT * FROM entries WHERE id=? AND {LIVE}", (entry_id,)).fetchone()
@@ -633,8 +716,25 @@ class Database:
                     stack.append(c)
         marks = ",".join("?" * len(members))
         found = self.conn.execute(
-            f"SELECT * FROM entries WHERE id IN ({marks}) AND {LIVE} ORDER BY date, start_time, time, id", members).fetchall()
+            f"SELECT * FROM entries WHERE id IN ({marks}) AND {LIVE} ORDER BY date, start_date, start_time, time, id", members).fetchall()
         return [self._load(r) for r in found]
+
+    def root_map(self) -> dict[int, int]:
+        """{紀錄 id: 延續鏈最上面那筆的 id}：同一件工作（含分岔）的紀錄對到同一個 id。"""
+        parent = {r["id"]: r["carried_from"] for r in self.conn.execute("SELECT id, carried_from FROM entries")}
+        roots = {}
+        for i in parent:
+            top, seen = i, {i}
+            while parent.get(top) is not None and parent[top] in parent and parent[top] not in seen:
+                top = parent[top]
+                seen.add(top)
+            roots[i] = top
+        return roots
+
+    def counted_minutes(self, entries: list[Entry]) -> dict[int, int]:
+        """見 counted_minutes()：同一件工作起訖相同的紀錄只算一次。"""
+        roots = self.root_map()
+        return counted_minutes(entries, lambda i: roots.get(i, i))
 
     def entries_for_date(self, date: str) -> list[Entry]:
         return self.entries_between(date, date)
@@ -643,7 +743,7 @@ class Database:
         """取得日期區間（含頭尾）內的紀錄，供週報等功能使用。"""
         rows = self.conn.execute(
             f"SELECT * FROM entries WHERE date BETWEEN ? AND ? AND {LIVE}"
-            " ORDER BY date, start_time, time, created_at, id",
+            " ORDER BY date, start_date, start_time, time, created_at, id",
             (start, end)).fetchall()
         return [self._load(r) for r in rows]
 
@@ -673,7 +773,7 @@ class Database:
             params += [like, like, like, *ids]
         rows = self.conn.execute(
             f"SELECT * FROM entries WHERE {' AND '.join(where)}"
-            " ORDER BY date DESC, start_time DESC, time DESC, id DESC LIMIT ?", (*params, limit)).fetchall()
+            " ORDER BY date DESC, start_date DESC, start_time DESC, time DESC, id DESC LIMIT ?", (*params, limit)).fetchall()
         return [self._load(r) for r in rows]
 
     # ---- 標籤 ----
@@ -961,9 +1061,10 @@ class Database:
         time = time or datetime.now().strftime("%H:%M")
         new_ids = []
         for old in self.carry_over_candidates(from_date, to_date):
-            # 起訖都是帶入當下（時長 0），不沿用前一筆的時間
+            # 沿用原本的時段（含日期）；工時統計時同一件工作相同的時段只算一次
             new = Entry(None, to_date, time, old.text, old.status, list(old.tags), [], old.id, old.category_id,
-                        title=old.title, priority=old.priority, start=time, end=time)
+                        title=old.title, priority=old.priority, start=old.start, end=old.end,
+                        start_date=old.start_date or old.date, end_date=old.end_date or old.date)
             new_ids.append(self.save_entry(new))
         return new_ids
 
