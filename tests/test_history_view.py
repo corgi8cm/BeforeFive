@@ -90,3 +90,35 @@ def test_history_dialog_step_older_and_newer(qapp, db):
     dlg.newer_btn.click()
     assert "PR 合併，已上線" in dlg.this_view.toPlainText() and dlg.position.text() == "第 3 / 3 則"
     assert not dlg.newer_btn.isEnabled() and dlg.older_btn.isEnabled()
+
+
+def test_preview_collapses_unchanged_carry_overs(qapp, tmp_path):
+    """每天帶入但沒改的紀錄不重複列出，只在前一次有修改的那則下面註明。"""
+    db = Database(tmp_path / "data")
+    a = db.save_entry(Entry(None, "2026-11-02", "10:00", "查 log", "doing", title="登入 timeout",
+                            start="09:00", end="10:00"))
+    for src, dst in (("2026-11-02", "2026-11-03"), ("2026-11-03", "2026-11-04")):
+        db.carry_over(src, dst)
+    (c,) = db.entries_for_date("2026-11-04")
+    c.text, c.status = "找到原因：連線池太小", "review"  # 11-04 有修改
+    db.save_entry(c)
+    db.carry_over("2026-11-04", "2026-11-05")
+    db.carry_over("2026-11-05", "2026-11-06")
+    (latest,) = db.entries_for_date("2026-11-06")
+    (span_changed,) = db.carry_over("2026-11-06", "2026-11-07")
+    e = db.get_entry(span_changed)
+    e.start, e.end, e.start_date, e.end_date = "13:00", "14:00", "2026-11-07", "2026-11-07"  # 只改時段也算修改
+    db.save_entry(e)
+
+    win = MainWindow(db, load_settings(tmp_path / "config"))
+    win.preview.show_entry(latest.id)
+    text = win.preview.view.toPlainText()
+    assert "這件工作的歷程（6 則，新的在上面，3 則帶入後沒有修改不重複列出）" in win.preview.header.text()
+    assert text.count("查 log") == 1 and text.count("找到原因：連線池太小") == 2  # 11-07 只改時段，內容照列
+    assert "之後帶入 2 次都沒有修改（11-05、11-06）；目前選取的是 11-06 那則" in text
+    assert "之後帶入 1 次都沒有修改（11-03）" in text
+    assert text.index("11-07") < text.index("11-04") < text.index("11-02")
+    assert "目前選取" in text.split("之後帶入 2 次")[0]  # 底色加在 11-04 那則
+
+    win.preview.show_entry(a)
+    assert "目前選取的是" not in win.preview.view.toPlainText()
