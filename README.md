@@ -6,7 +6,7 @@
 
 所有資料只存在本機，不呼叫任何外部 API。
 
-目前版本：**3.1.0**（主視窗標題列會顯示版本，更新內容見 [CHANGELOG.md](CHANGELOG.md)）。
+目前版本：**3.2.0**（主視窗標題列會顯示版本，更新內容見 [CHANGELOG.md](CHANGELOG.md)）。
 
 ## 安裝與啟動（Windows）
 
