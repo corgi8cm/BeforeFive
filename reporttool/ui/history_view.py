@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..changes import compare
 from ..db import STATUS_ICONS, STATUS_LABELS, Database, Entry, span_text
 from .entry_dialog import STATUS_COLORS
 
@@ -53,9 +54,45 @@ def entry_html(db: Database, entry: Entry, current: bool = False, images: bool =
     return f'<table width="100%" cellpadding="6" style="{style}"><tr><td>{"<br>".join(parts)}</td></tr></table>'
 
 
+def unchanged(prev: Entry, entry: Entry) -> bool:
+    """帶入後完全沒有修改：狀態、優先、標題、分類、tag、內容、時段都一樣，也沒有新附圖。"""
+    return not compare(prev, entry).changed and prev.span_key == entry.span_key
+
+
+def collapse_unchanged(chain: list[Entry]) -> list[tuple[Entry, list[Entry]]]:
+    """把帶入後沒有修改的紀錄併到它前一次有修改的那則：回傳 [(那則, 之後沒修改的幾則)]，由舊到新。"""
+    groups: list[tuple[Entry, list[Entry]]] = []
+    group_of: dict[int, int] = {}  # 紀錄 id → groups 的位置
+    by_id = {e.id: e for e in chain}
+    for e in chain:
+        prev = by_id.get(e.carried_from)
+        if prev is not None and prev.id in group_of and unchanged(prev, e):
+            group_of[e.id] = group_of[prev.id]
+            groups[group_of[e.id]][1].append(e)
+        else:
+            group_of[e.id] = len(groups)
+            groups.append((e, []))
+    return groups
+
+
+def _days(entries: list[Entry]) -> str:
+    days = [e.date[5:] for e in entries]
+    return "、".join(days) if len(days) <= 3 else f"{days[0]}～{days[-1]}"
+
+
 def chain_html(db: Database, chain: list[Entry], current_id: int | None) -> str:
-    """整條歷程，新的在上面；目前選取的那則加底色。"""
-    blocks = [entry_html(db, e, e.id == current_id) for e in reversed(chain)]
+    """整條歷程，新的在上面；目前選取的那則加底色。
+    每天帶入但沒有修改的紀錄不重複列出，只在前一次有修改的那則下面註明。"""
+    blocks = []
+    for base, same in reversed(collapse_unchanged(chain)):
+        selected = next((e for e in [base, *same] if e.id == current_id), None)
+        html = entry_html(db, base, selected is not None)
+        if same:
+            note = f"之後帶入 {len(same)} 次都沒有修改（{escape(_days(same))}）"
+            if selected is not None and selected is not base:
+                note += f"；目前選取的是 {selected.date[5:]} 那則"
+            html += f'<div style="color:#888; margin-left:6px;">↳ {note}</div>'
+        blocks.append(html)
     return '<hr style="border:0; border-top:1px solid #ddd;">'.join(blocks)
 
 
@@ -93,7 +130,12 @@ class HistoryPreview(QWidget):
             self.header.setText("預覽")
             self.view.setHtml(f'<span style="color:#888;">{self.EMPTY}</span>')
             return
-        self.header.setText(f"這件工作的歷程（{len(chain)} 則，新的在上面）" if len(chain) > 1 else "預覽")
+        if len(chain) > 1:
+            hidden = len(chain) - len(collapse_unchanged(chain))
+            extra = f"，{hidden} 則帶入後沒有修改不重複列出" if hidden else ""
+            self.header.setText(f"這件工作的歷程（{len(chain)} 則，新的在上面{extra}）")
+        else:
+            self.header.setText("預覽")
         self.view.setHtml(chain_html(self.db, chain, entry_id if len(chain) > 1 else None))
 
 
